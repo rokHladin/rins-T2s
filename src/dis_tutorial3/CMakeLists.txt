@@ -19,6 +19,7 @@ find_package(rosidl_default_generators REQUIRED)
 set(msg_files
   "msg/DetectedFace.msg"
   "msg/DetectedRing.msg"
+  "msg/DetectedBird.msg"
 )
 
 rosidl_generate_interfaces(${PROJECT_NAME}
@@ -41,6 +42,7 @@ install(PROGRAMS
   scripts/planner.py
   scripts/face_search.py
   scripts/detect_rings.py
+  scripts/bird_detect.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

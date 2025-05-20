@@ -1,0 +1,9 @@
+std_msgs/Header header
+int32 bbox_xmin
+int32 bbox_ymin
+int32 bbox_xmax
+int32 bbox_ymax
+int32 center_x
+int32 center_y
+string class_name
+float32 confidence

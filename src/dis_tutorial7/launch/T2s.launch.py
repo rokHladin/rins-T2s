@@ -16,7 +16,7 @@ def generate_launch_description():
     # Arguments
     arguments = [
         DeclareLaunchArgument('rviz', default_value='true', description='Launch RViz2'),
-        DeclareLaunchArgument('world', default_value='bird_demo1', description='Simulation world'),
+        DeclareLaunchArgument('world', default_value='bird_demo3', description='Simulation world'),
         DeclareLaunchArgument('model', default_value='standard', description='Turtlebot4 model'),
         DeclareLaunchArgument('map', default_value=PathJoinSubstitution([pkg_dis_tutorial3, 'maps', 'map.yaml']), description='Map YAML')
     ]
