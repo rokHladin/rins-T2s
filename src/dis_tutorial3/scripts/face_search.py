@@ -20,6 +20,7 @@ import cv2
 from robot_commander import RobotCommander
 from dis_tutorial3.msg import DetectedFace
 from dis_tutorial3.msg import DetectedRing
+from dis_tutorial3.msg import DetectedBird
 
 from geometry_msgs.msg import PoseWithCovarianceStamped
 
@@ -45,6 +46,8 @@ class InspectionNavigator(Node):
         self.initial_pose_pub = self.create_publisher(PoseWithCovarianceStamped, '/initialpose', 10)
         self.pushed_face_pub = self.create_publisher(Marker, '/pushed_faces', 10)
         self.pub_ring_marker = self.create_publisher(MarkerArray, '/ring_markers', 10)
+        self.pub_bird_marker = self.create_publisher(MarkerArray, '/bird_markers', 10)
+
 
         self.create_subscription(
             DetectedFace,
@@ -68,6 +71,14 @@ class InspectionNavigator(Node):
             self.amcl_callback,
             10
         )
+
+        self.create_subscription(
+            DetectedBird,
+            '/detected_birds',
+            self.bird_callback,
+            qos_profile_sensor_data
+        )
+
         
         self.odom_pose = None
         self.sub_odom = self.create_subscription(Odometry, '/odom', self.odom_callback, qos_profile_sensor_data)
@@ -110,6 +121,13 @@ class InspectionNavigator(Node):
         self.active_ring_color = None
 
         self.ring_visit_dist = 0.6
+
+        # Bird related
+        self.seen_birds = set()
+        self.bird_queue = deque()
+        self.active_bird_goal = None
+        self.active_bird_class = None
+
 
 
     def odom_callback(self, msg: Odometry):
@@ -179,6 +197,30 @@ class InspectionNavigator(Node):
                     self.publish_initial_pose(x, y, math.degrees(yaw))
             else:
                 self.get_logger().error("❌ Max retries reached. AMCL is not responding to initial pose.")
+
+    def bird_callback(self, msg: DetectedBird):
+        pos = (msg.position.x, msg.position.y)
+        class_name = msg.class_name.lower()
+
+        # Filter nearby seen birds
+        for seen_pos in self.seen_birds:
+            if np.linalg.norm(np.array(pos) - np.array(seen_pos)) < 0.5:
+                return
+
+        # Avoid duplicate in queue
+        for p, _ in self.bird_queue:
+            if np.linalg.norm(np.array(pos) - np.array(p)) < 0.5:
+                return
+
+        if not np.all(np.isfinite(pos)):
+            self.get_logger().warn("Discarded invalid bird with NaNs.")
+            return
+
+        self.seen_birds.add(pos)
+        self.bird_queue.append((pos, class_name))
+        self.get_logger().info(f"🕊️ Bird detected at {pos} ({class_name})")
+
+        self.publish_bird_marker(pos, class_name)
 
 
     def face_callback(self, msg: DetectedFace):
@@ -582,6 +624,46 @@ class InspectionNavigator(Node):
         ma.markers.append(m)
 
         self.pub_visited.publish(ma)
+
+    def publish_bird_marker(self, position, class_name=""):
+        marker = Marker()
+        marker.header.frame_id = "map"
+        marker.header.stamp = self.get_clock().now().to_msg()
+        marker.ns = "birds"
+        marker.id = int(position[0] * 1000) + int(position[1] * 1000)
+        marker.type = Marker.SPHERE
+        marker.action = Marker.ADD
+        marker.pose.position.x = position[0]
+        marker.pose.position.y = position[1]
+        marker.pose.position.z = 0.0
+        marker.scale.x = 0.15
+        marker.scale.y = 0.15
+        marker.scale.z = 0.05
+        marker.color.r = 1.0
+        marker.color.g = 0.0
+        marker.color.b = 1.0
+        marker.color.a = 1.0
+
+        # Add optional text label for species
+        label = Marker()
+        label.header.frame_id = "map"
+        label.header.stamp = marker.header.stamp
+        label.ns = "birds"
+        label.id = marker.id + 1000000
+        label.type = Marker.TEXT_VIEW_FACING
+        label.action = Marker.ADD
+        label.pose.position.x = position[0]
+        label.pose.position.y = position[1]
+        label.pose.position.z = 0.2
+        label.scale.z = 0.12  # text height
+        label.color.r = 1.0
+        label.color.g = 1.0
+        label.color.b = 1.0
+        label.color.a = 1.0
+        label.text = class_name
+
+        self.pub_bird_marker.publish(MarkerArray(markers=[marker, label]))
+
 
     def publish_ring_marker(self, position):
         marker = Marker()
