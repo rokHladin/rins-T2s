@@ -127,6 +127,11 @@ class InspectionNavigator(Node):
         self.bird_queue = deque()
         self.active_bird_goal = None
         self.active_bird_class = None
+        self.bird_data = {}
+        self.bird_queue = deque()
+        self.active_bird_goal = None
+
+        self.interrupt_start_time = None
 
 
 
@@ -202,26 +207,21 @@ class InspectionNavigator(Node):
         pos = (msg.position.x, msg.position.y)
         class_name = msg.class_name.lower()
 
-        # Filter nearby seen birds
-        for seen_pos in self.seen_birds:
-            if np.linalg.norm(np.array(pos) - np.array(seen_pos)) < 0.5:
-                return
-
-        # Avoid duplicate in queue
-        for p, _ in self.bird_queue:
-            if np.linalg.norm(np.array(pos) - np.array(p)) < 0.5:
-                return
-
         if not np.all(np.isfinite(pos)):
             self.get_logger().warn("Discarded invalid bird with NaNs.")
             return
 
-        self.seen_birds.add(pos)
-        self.bird_queue.append((pos, class_name))
-        self.get_logger().info(f"🕊️ Bird detected at {pos} ({class_name})")
+        for known_pos in self.bird_data:
+            if np.linalg.norm(np.array(pos) - np.array(known_pos)) < 0.5:
+                if not self.bird_data[known_pos]['visited']:
+                    self.bird_data[known_pos]['classifications'].append(class_name)
+                return
 
+        self.bird_data[pos] = {'classifications': [class_name], 'visited': False}
+        self.bird_queue.append(pos)
         self.publish_bird_marker(pos, class_name)
-
+        self.get_logger().info(f"🕊️ New bird queued at {pos} ({class_name})")
+    
 
     def face_callback(self, msg: DetectedFace):
         new_pos = np.array([msg.position.x, msg.position.y])
@@ -353,14 +353,9 @@ class InspectionNavigator(Node):
         engine.runAndWait()
 
 
-
     def loop(self):
-        self.get_logger().info(f"task complete {self.cmdr.isTaskComplete()}, interrupting {self.interrupting}, goals left: {len(self.cam_poses)}")
-        if self.robot_pose is None or self.occupancy is None or not self.cam_poses:
-            return
-
         now = self.get_clock().now()
-        
+
         # === INTERRUPT HANDLING ===
         if self.interrupting:
             # --- RING GOAL ---
@@ -370,7 +365,7 @@ class InspectionNavigator(Node):
                 dist = math.hypot(tx - rx, ty - ry)
 
                 timeout_elapsed = (
-                    hasattr(self, "interrupt_start_time") and 
+                    hasattr(self, "interrupt_start_time") and
                     (now - self.interrupt_start_time).nanoseconds > 20 * 1e9  # 20 seconds
                 )
 
@@ -380,7 +375,6 @@ class InspectionNavigator(Node):
                     self.interrupting = False
                     self.active_ring_goal = None
 
-                    # Say ring color
                     if hasattr(self, "active_ring_color"):
                         self.speak(self.sr, f"This is a {self.active_ring_color} ring")
 
@@ -389,7 +383,6 @@ class InspectionNavigator(Node):
                         self.resume_after_interrupt = None
                         self.cmdr.goToPose(self.active_goal['pose'])
                     return
-
                 return
 
             # --- FACE GOAL COMPLETION ---
@@ -425,13 +418,9 @@ class InspectionNavigator(Node):
             x, y = face[0]
             yaw = math.atan2(-face[1][1], -face[1][0])
             self.cmdr.goToPose((x, y, yaw))
-
-            if self.cmdr.isTaskComplete():
-                self.get_logger().warn("⚠️ Face goal was not accepted or already completed.")
-                self.interrupting = False
             return
 
-        elif self.ring_queue:
+        if self.ring_queue:
             ring, color = self.ring_queue.popleft()
             self.get_logger().info(f"🟡 Navigating to ring at {ring} (color: {color})")
             self.publish_ring_marker(ring)
@@ -447,16 +436,55 @@ class InspectionNavigator(Node):
             tx, ty = ring
             yaw = math.atan2(ty - ry, tx - rx)
             self.cmdr.goToPose((tx, ty, yaw))
+            return
 
-            if self.cmdr.isTaskComplete():
-                self.get_logger().warn("⚠️ Ring goal not accepted or completed instantly.")
+        if self.bird_queue:
+            pos = self.bird_queue.popleft()
+            if self.bird_data[pos]['visited']:
+                return
+
+            self.resume_after_interrupt = self.active_goal
+            self.active_goal = None
+            self.interrupting = True
+            self.interrupt_start_time = now
+            self.active_bird_goal = pos
+
+            self.get_logger().info(f"🕊️ Navigating to bird at {pos}")
+            rx, ry, _ = self.robot_pose
+            yaw = math.atan2(pos[1] - ry, pos[0] - rx)
+            self.cmdr.goToPose((pos[0], pos[1], yaw))
+            return
+
+        if self.active_bird_goal:
+            rx, ry, _ = self.robot_pose
+            tx, ty = self.active_bird_goal
+            dist = math.hypot(tx - rx, ty - ry)
+
+            timeout_elapsed = (
+                self.interrupt_start_time is not None and 
+                (now - self.interrupt_start_time).nanoseconds > 20 * 1e9
+            )
+
+            
+
+            if dist < 0.5 or self.cmdr.isTaskComplete() or timeout_elapsed:
+                self.cmdr.cancelTask()
                 self.interrupting = False
-                self.active_ring_goal = None
+                classifications = self.bird_data[self.active_bird_goal]['classifications']
+                most_common = max(set(classifications), key=classifications.count)
+                self.bird_data[self.active_bird_goal]['visited'] = True
+                self.speak(self.sr, f"This is a {most_common} bird")
+                self.get_logger().info(f"✅ Visited bird at {self.active_bird_goal}, classified as {most_common}")
+                self.active_bird_goal = None
+
+                if self.resume_after_interrupt:
+                    self.active_goal = self.resume_after_interrupt
+                    self.resume_after_interrupt = None
+                    self.cmdr.goToPose(self.active_goal['pose'])
             return
 
         # === INSPECTION GOALS ===
         if self.active_goal:
-            # Hardcoded goal? Skip target checking
             if self.active_goal.get('hardcoded', False):
                 if self.cmdr.isTaskComplete():
                     self.get_logger().info("🐢🐢🐢 Arrived at hardcoded goal.")
@@ -498,6 +526,7 @@ class InspectionNavigator(Node):
             self.active_goal = next_goal
             self.get_logger().info(f"➡️ Going to next pose at {next_goal['pose']}")
             self.cmdr.goToPose(next_goal['pose'])
+
 
 
 
