@@ -20,6 +20,7 @@ import cv2
 from robot_commander import RobotCommander
 from dis_tutorial3.msg import DetectedFace
 from dis_tutorial3.msg import DetectedRing
+from dis_tutorial3.msg import DetectedBird
 
 from geometry_msgs.msg import PoseWithCovarianceStamped
 
@@ -45,6 +46,8 @@ class InspectionNavigator(Node):
         self.initial_pose_pub = self.create_publisher(PoseWithCovarianceStamped, '/initialpose', 10)
         self.pushed_face_pub = self.create_publisher(Marker, '/pushed_faces', 10)
         self.pub_ring_marker = self.create_publisher(MarkerArray, '/ring_markers', 10)
+        self.pub_bird_marker = self.create_publisher(MarkerArray, '/bird_markers', 10)
+
 
         self.create_subscription(
             DetectedFace,
@@ -68,6 +71,14 @@ class InspectionNavigator(Node):
             self.amcl_callback,
             10
         )
+
+        self.create_subscription(
+            DetectedBird,
+            '/detected_birds',
+            self.bird_callback,
+            qos_profile_sensor_data
+        )
+
         
         self.odom_pose = None
         self.sub_odom = self.create_subscription(Odometry, '/odom', self.odom_callback, qos_profile_sensor_data)
@@ -110,6 +121,18 @@ class InspectionNavigator(Node):
         self.active_ring_color = None
 
         self.ring_visit_dist = 0.6
+
+        # Bird related
+        self.seen_birds = set()
+        self.bird_queue = deque()
+        self.active_bird_goal = None
+        self.active_bird_class = None
+        self.bird_data = {}
+        self.bird_queue = deque()
+        self.active_bird_goal = None
+
+        self.interrupt_start_time = None
+
 
 
     def odom_callback(self, msg: Odometry):
@@ -180,6 +203,25 @@ class InspectionNavigator(Node):
             else:
                 self.get_logger().error("❌ Max retries reached. AMCL is not responding to initial pose.")
 
+    def bird_callback(self, msg: DetectedBird):
+        pos = (msg.position.x, msg.position.y)
+        class_name = msg.class_name.lower()
+
+        if not np.all(np.isfinite(pos)):
+            self.get_logger().warn("Discarded invalid bird with NaNs.")
+            return
+
+        for known_pos in self.bird_data:
+            if np.linalg.norm(np.array(pos) - np.array(known_pos)) < 0.5:
+                if not self.bird_data[known_pos]['visited']:
+                    self.bird_data[known_pos]['classifications'].append(class_name)
+                return
+
+        self.bird_data[pos] = {'classifications': [class_name], 'visited': False}
+        self.bird_queue.append(pos)
+        self.publish_bird_marker(pos, class_name)
+        self.get_logger().info(f"🕊️ New bird queued at {pos} ({class_name})")
+    
 
     def face_callback(self, msg: DetectedFace):
         new_pos = np.array([msg.position.x, msg.position.y])
@@ -311,14 +353,9 @@ class InspectionNavigator(Node):
         engine.runAndWait()
 
 
-
     def loop(self):
-        self.get_logger().info(f"task complete {self.cmdr.isTaskComplete()}, interrupting {self.interrupting}, goals left: {len(self.cam_poses)}")
-        if self.robot_pose is None or self.occupancy is None or not self.cam_poses:
-            return
-
         now = self.get_clock().now()
-        
+
         # === INTERRUPT HANDLING ===
         if self.interrupting:
             # --- RING GOAL ---
@@ -328,7 +365,7 @@ class InspectionNavigator(Node):
                 dist = math.hypot(tx - rx, ty - ry)
 
                 timeout_elapsed = (
-                    hasattr(self, "interrupt_start_time") and 
+                    hasattr(self, "interrupt_start_time") and
                     (now - self.interrupt_start_time).nanoseconds > 20 * 1e9  # 20 seconds
                 )
 
@@ -338,7 +375,6 @@ class InspectionNavigator(Node):
                     self.interrupting = False
                     self.active_ring_goal = None
 
-                    # Say ring color
                     if hasattr(self, "active_ring_color"):
                         self.speak(self.sr, f"This is a {self.active_ring_color} ring")
 
@@ -347,7 +383,6 @@ class InspectionNavigator(Node):
                         self.resume_after_interrupt = None
                         self.cmdr.goToPose(self.active_goal['pose'])
                     return
-
                 return
 
             # --- FACE GOAL COMPLETION ---
@@ -383,13 +418,9 @@ class InspectionNavigator(Node):
             x, y = face[0]
             yaw = math.atan2(-face[1][1], -face[1][0])
             self.cmdr.goToPose((x, y, yaw))
-
-            if self.cmdr.isTaskComplete():
-                self.get_logger().warn("⚠️ Face goal was not accepted or already completed.")
-                self.interrupting = False
             return
 
-        elif self.ring_queue:
+        if self.ring_queue:
             ring, color = self.ring_queue.popleft()
             self.get_logger().info(f"🟡 Navigating to ring at {ring} (color: {color})")
             self.publish_ring_marker(ring)
@@ -405,16 +436,55 @@ class InspectionNavigator(Node):
             tx, ty = ring
             yaw = math.atan2(ty - ry, tx - rx)
             self.cmdr.goToPose((tx, ty, yaw))
+            return
 
-            if self.cmdr.isTaskComplete():
-                self.get_logger().warn("⚠️ Ring goal not accepted or completed instantly.")
+        if self.bird_queue:
+            pos = self.bird_queue.popleft()
+            if self.bird_data[pos]['visited']:
+                return
+
+            self.resume_after_interrupt = self.active_goal
+            self.active_goal = None
+            self.interrupting = True
+            self.interrupt_start_time = now
+            self.active_bird_goal = pos
+
+            self.get_logger().info(f"🕊️ Navigating to bird at {pos}")
+            rx, ry, _ = self.robot_pose
+            yaw = math.atan2(pos[1] - ry, pos[0] - rx)
+            self.cmdr.goToPose((pos[0], pos[1], yaw))
+            return
+
+        if self.active_bird_goal:
+            rx, ry, _ = self.robot_pose
+            tx, ty = self.active_bird_goal
+            dist = math.hypot(tx - rx, ty - ry)
+
+            timeout_elapsed = (
+                self.interrupt_start_time is not None and 
+                (now - self.interrupt_start_time).nanoseconds > 20 * 1e9
+            )
+
+            
+
+            if dist < 0.5 or self.cmdr.isTaskComplete() or timeout_elapsed:
+                self.cmdr.cancelTask()
                 self.interrupting = False
-                self.active_ring_goal = None
+                classifications = self.bird_data[self.active_bird_goal]['classifications']
+                most_common = max(set(classifications), key=classifications.count)
+                self.bird_data[self.active_bird_goal]['visited'] = True
+                self.speak(self.sr, f"This is a {most_common} bird")
+                self.get_logger().info(f"✅ Visited bird at {self.active_bird_goal}, classified as {most_common}")
+                self.active_bird_goal = None
+
+                if self.resume_after_interrupt:
+                    self.active_goal = self.resume_after_interrupt
+                    self.resume_after_interrupt = None
+                    self.cmdr.goToPose(self.active_goal['pose'])
             return
 
         # === INSPECTION GOALS ===
         if self.active_goal:
-            # Hardcoded goal? Skip target checking
             if self.active_goal.get('hardcoded', False):
                 if self.cmdr.isTaskComplete():
                     self.get_logger().info("🐢🐢🐢 Arrived at hardcoded goal.")
@@ -456,6 +526,7 @@ class InspectionNavigator(Node):
             self.active_goal = next_goal
             self.get_logger().info(f"➡️ Going to next pose at {next_goal['pose']}")
             self.cmdr.goToPose(next_goal['pose'])
+
 
 
 
@@ -582,6 +653,46 @@ class InspectionNavigator(Node):
         ma.markers.append(m)
 
         self.pub_visited.publish(ma)
+
+    def publish_bird_marker(self, position, class_name=""):
+        marker = Marker()
+        marker.header.frame_id = "map"
+        marker.header.stamp = self.get_clock().now().to_msg()
+        marker.ns = "birds"
+        marker.id = int(position[0] * 1000) + int(position[1] * 1000)
+        marker.type = Marker.SPHERE
+        marker.action = Marker.ADD
+        marker.pose.position.x = position[0]
+        marker.pose.position.y = position[1]
+        marker.pose.position.z = 0.0
+        marker.scale.x = 0.15
+        marker.scale.y = 0.15
+        marker.scale.z = 0.05
+        marker.color.r = 1.0
+        marker.color.g = 0.0
+        marker.color.b = 1.0
+        marker.color.a = 1.0
+
+        # Add optional text label for species
+        label = Marker()
+        label.header.frame_id = "map"
+        label.header.stamp = marker.header.stamp
+        label.ns = "birds"
+        label.id = marker.id + 1000000
+        label.type = Marker.TEXT_VIEW_FACING
+        label.action = Marker.ADD
+        label.pose.position.x = position[0]
+        label.pose.position.y = position[1]
+        label.pose.position.z = 0.2
+        label.scale.z = 0.12  # text height
+        label.color.r = 1.0
+        label.color.g = 1.0
+        label.color.b = 1.0
+        label.color.a = 1.0
+        label.text = class_name
+
+        self.pub_bird_marker.publish(MarkerArray(markers=[marker, label]))
+
 
     def publish_ring_marker(self, position):
         marker = Marker()

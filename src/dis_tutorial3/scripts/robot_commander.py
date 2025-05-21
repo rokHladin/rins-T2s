@@ -127,9 +127,9 @@ class RobotCommander(Node):
         self.goal_handle = send_goal_future.result()
 
         if not self.goal_handle.accepted:
-            self.error('Goal to ' + str(pose.pose.position.x) + ' ' +
-                       str(pose.pose.position.y) + ' was rejected!')
+            self.error(f"Goal to {x}, {y}, yaw {math.degrees(yaw):.1f}° was rejected!")
             return False
+
 
         self.result_future = self.goal_handle.get_result_async()
         return True
