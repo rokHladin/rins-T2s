@@ -36,6 +36,9 @@ install(DIRECTORY
 )
 
 install(PROGRAMS
+  scripts/T2s_scripts/navigator.py
+  scripts/T2s_scripts/face_detector.py
+  scripts/T2s_scripts/ring_detector.py
   scripts/detect_people.py
   scripts/robot_commander.py
   scripts/planner.py

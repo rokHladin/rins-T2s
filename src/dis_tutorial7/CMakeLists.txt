@@ -28,6 +28,7 @@ install(DIRECTORY
 
 install(PROGRAMS
   scripts/arm_mover_actions.py
+  scripts/bridge_navigation.py
   DESTINATION lib/${PROJECT_NAME})
 
 ament_package()

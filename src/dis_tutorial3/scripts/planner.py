@@ -168,7 +168,8 @@ class Planner(Node):
             {'pose': (-0.94, 0.40, math.radians(95)), 'label': 'black'},
             {'pose': (-1.67, 3.78, math.radians(-90)), 'label': 'black'}
         ]
-        
+        ring_goals = [] #disabled
+
         for ring in ring_goals:
             x, y, yaw = ring['pose']
             q = transforms3d.euler.euler2quat(0, 0, yaw, axes='sxyz')
