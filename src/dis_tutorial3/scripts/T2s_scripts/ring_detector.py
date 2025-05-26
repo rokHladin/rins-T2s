@@ -67,7 +67,7 @@ class RingDetector(Node):
         self.latest_pointcloud = None
         self.pc_sub = self.create_subscription(
             PointCloud2,
-            "/oakd/rgb/preview/depth/points",
+            "/top_camera/rgb/preview/depth/points",
             self.pc_callback,
             qos_profile_sensor_data
         )
@@ -95,8 +95,8 @@ class RingDetector(Node):
 
         #ring detection params
         self.min_ring_contour_size = 5
-        self.max_center_distance = 5.0
-        self.max_angle_diff = 7.0
+        self.max_center_distance = 1.0
+        self.max_angle_diff = 40.0
         self.min_ring_width = 2
         self.max_ring_width = 50
         self.min_circle_height = 4
@@ -114,8 +114,8 @@ class RingDetector(Node):
             "blue": generate_wrapped_gaussian(center=120)
         }
 
-        self.arm_command_pub = self.create_publisher(String, "/arm_command", 10)
-        self.initial_pose_timer = self.create_timer(3, self.publish_arm_pos)
+        #self.arm_command_pub = self.create_publisher(String, "/arm_command", 10)
+        #self.initial_pose_timer = self.create_timer(3, self.publish_arm_pos)
 
     def publish_arm_pos(self):
         msg = String()
@@ -369,7 +369,10 @@ class RingDetector(Node):
 
         # Subtract Harris corners from Canny edges to break long edges
         canny_edges_cut = cv2.bitwise_and(canny_edges, cv2.bitwise_not(corner_mask_dilated))
-        canny_edges_cut = self.remove_edge_spurs(canny_edges_cut, max_steps=10)
+
+        trim_pixels = 25
+
+        canny_edges_cut = self.remove_edge_spurs(canny_edges_cut, max_steps=trim_pixels)
 
 
         # Find contours on the modified edge map
@@ -417,61 +420,89 @@ class RingDetector(Node):
         #fit ellipsis to contours
         ellipses = []
         for cnt in contours:
+            #self.get_logger().info(f"Fitting ellipse to contour with {cnt.shape[0]} points")
+
             if cnt.shape[0] >= 9:  # Fit ellipse only if there are enough points
+
+
                 ellipse = cv2.fitEllipse(cnt)
                 ellipses.append(ellipse)
 
         #find pars of 2 ellipsis to form a ring - the pair is a ring candidate
+        # Find pairs of ellipses to form a ring - the pair is a ring candidate
         ring_candidates = []
         for i in range(len(ellipses)):
             for j in range(i + 1, len(ellipses)):
                 e1 = ellipses[i]
                 e2 = ellipses[j]
-                
-                #check if their centers roughly match
-                center_dist = np.sqrt(((e1[0][0] - e2[0][0]) ** 2 + (e1[0][1] - e2[0][1]) ** 2))
-                if center_dist > self.max_center_distance:
-                    continue
-                
-                #check if their angles match
+
+                center_dist = np.sqrt((e1[0][0] - e2[0][0]) ** 2 + (e1[0][1] - e2[0][1]) ** 2)
                 angle_diff = np.abs(e1[2] - e2[2])
-                if angle_diff > self.max_angle_diff:
+
+                #self.get_logger().info(f"Testing ellipse pair {i}-{j}")
+                #self.get_logger().info(f" - Center distance: {center_dist:.2f}")
+                #self.get_logger().info(f" - Angle difference: {angle_diff:.2f}°")
+
+                if center_dist > self.max_center_distance:
+                    #self.get_logger().info(f" ❌ Rejected: Center distance {center_dist:.2f} > max {self.max_center_distance}")
                     continue
-                
-                #determine outter ellipse
+
+                if angle_diff > self.max_angle_diff:
+                    #self.get_logger().info(f" ❌ Rejected: Angle difference {angle_diff:.2f} > max {self.max_angle_diff}")
+                    continue
+
+                # Determine outer and inner ellipse
                 e1_area = np.pi * e1[1][0] * e1[1][1] / 4
                 e2_area = np.pi * e2[1][0] * e2[1][1] / 4
-                
+
                 if e1_area > e2_area:
                     larger = e1
                     smaller = e2
                 else:
                     larger = e2
                     smaller = e1
-                
-                #check if the outter fully contains the inner
+
                 l_major, l_minor = max(larger[1]), min(larger[1])
                 s_major, s_minor = max(smaller[1]), min(smaller[1])
+
                 ring_width = (l_minor - s_minor) / 2
+                #self.get_logger().info(f" - Ring width: {ring_width:.2f} px")
+
                 if ring_width < self.min_ring_width or ring_width > self.max_ring_width:
+                    #self.get_logger().info(f" ❌ Rejected: Ring width {ring_width:.2f} not in range ({self.min_ring_width}, {self.max_ring_width})")
                     continue
+
                 if l_minor < self.min_circle_height or s_minor < self.min_circle_height:
+                    #self.get_logger().info(f" ❌ Rejected: Ellipse height too small (l_minor={l_minor:.2f}, s_minor={s_minor:.2f})")
                     continue
-                
-                #reject very thin ellipsis
+
                 aspect_ratio_l = l_major / l_minor
                 aspect_ratio_s = s_major / s_minor
+                #self.get_logger().info(f" - Aspect ratios: L={aspect_ratio_l:.2f}, S={aspect_ratio_s:.2f}")
+
                 if aspect_ratio_l > 1.5 or aspect_ratio_s > 1.5:
+                    #self.get_logger().info(f" ❌ Rejected: Ellipse too thin (aspect ratio > 1.5)")
                     continue
+
                 border_major = (l_major - s_major) / 2
                 border_minor = (l_minor - s_minor) / 2
                 border_diff = np.abs(border_major - border_minor)
+
+                #self.get_logger().info(f" - Border diff: {border_diff:.2f} px")
+
                 if border_diff > 5:
+                    #self.get_logger().info(f" ❌ Rejected: Border thickness mismatch {border_diff:.2f} > 5 px")
                     continue
-                
-                #validate ring with depth information
+
                 if self.is_3d_ring(depth_image, larger[0], l_major, l_minor, smaller[0], s_major, s_minor):
                     ring_candidates.append((larger, smaller))
+                    #self.get_logger().info(f" ✅ Accepted ring pair {i}-{j}")
+                else:
+                    #self.get_logger().info(f" ❌ Rejected: Depth validation failed")
+                    pass
+
+        #self.get_logger().info(f"✅ Total ring candidates passed: {len(ring_candidates)}")
+
 
         #copy for elipse visualization
         if self.draw_visualization_windows:
@@ -538,15 +569,15 @@ class RingDetector(Node):
                         return
 
                     #get ring point cloud center
-                    avg_3d = np.mean(valid_points, axis=0)
+                    median3d = np.median(valid_points, axis=0)
 
                     #transform to map frame
                     stamped = PointStamped()
                     stamped.header.stamp = self.get_clock().now().to_msg()
                     stamped.header.frame_id = self.latest_pointcloud.header.frame_id
-                    stamped.point.x = float(avg_3d[0])
-                    stamped.point.y = float(avg_3d[1])
-                    stamped.point.z = float(avg_3d[2])
+                    stamped.point.x = float(median3d[0])
+                    stamped.point.y = float(median3d[1])
+                    stamped.point.z = float(median3d[2])
 
                     transform = self.tf_buffer.lookup_transform(
                         target_frame="map",

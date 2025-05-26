@@ -119,7 +119,7 @@ class RobotCommander(Node):
         goal_msg.pose.pose.orientation.w = q[0]
         goal_msg.behavior_tree = behavior_tree
 
-        self.info(f'Navigating to goal: x={pose[0]:.2f}, y={pose[1]:.2f}, yaw={math.degrees(pose[2]):.1f}°')
+        self.info(f'NAVIGATOR Navigating to goal: x={pose[0]:.2f}, y={pose[1]:.2f}, yaw={math.degrees(pose[2]):.1f}°')
 
         send_goal_future = self.nav_to_pose_client.send_goal_async(goal_msg,
                                                                    self._feedbackCallback)

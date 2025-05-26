@@ -1,10 +1,10 @@
 # DONE:
-- Face detection and position estimation
-- Navigation between markers
-- Autonomous exploration
-- Ring detection
-- Ring color recognition
-- Distinguish between ring and non-ring and 3D rings and 2D rings
+- Ring detector - depth estimation (could be an issue with skewed ring mask casing more outliers than there are inliers)
+- 
+- 
+- 
+- 
+- 
 
 # TODO:
 
