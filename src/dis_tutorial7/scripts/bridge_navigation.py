@@ -192,9 +192,9 @@ class BridgeNavigator(Node):
 
             if all_lines:
                 image_center_x = width // 2
-                angle_thresh_deg = 45.0
+                angle_thresh_deg = 60.0
                 min_x_separation = width * 0.2
-                max_x_separation = width * 0.7
+                max_x_separation = width * 0.8
                 number_of_pairs_generated = 5
 
                 left_lines = [l for l in all_lines if l["center"][0] < image_center_x]

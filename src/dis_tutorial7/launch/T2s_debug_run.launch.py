@@ -53,7 +53,7 @@ def generate_launch_description():
     )
 
     planner_node = TimerAction(
-        period=10.0,
+        period=12.0,
         actions=[Node(
             package='dis_tutorial3',
             executable='planner.py',
@@ -63,7 +63,7 @@ def generate_launch_description():
     )
 
     face_detector = TimerAction(
-        period=12.0,
+        period=14.0,
         actions=[Node(
             package='dis_tutorial3',
             executable='face_detector.py',
@@ -73,7 +73,7 @@ def generate_launch_description():
     )
 
     ring_detector = TimerAction(
-        period=14.0,
+        period=16.0,
         actions=[Node(
             package='dis_tutorial3',
             executable='ring_detector.py',
@@ -83,7 +83,7 @@ def generate_launch_description():
     )
 
     navigator = TimerAction(
-        period=18.0,
+        period=20.0,
         actions=[Node(
             package='dis_tutorial3',
             executable='navigator.py',
@@ -93,7 +93,7 @@ def generate_launch_description():
     )
 
     bridge_nav = TimerAction(
-        period=19.0,
+        period=21.0,
         actions=[Node(
             package='dis_tutorial7',
             executable='bridge_navigation.py',

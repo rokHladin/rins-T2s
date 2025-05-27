@@ -37,6 +37,7 @@ class RobotState(Enum):
     SERIVICE_RING_DETECTION = auto()
     MOVING_TO_BRIDGE = auto()
     BRIDGE_NAVIGATION = auto()
+    GO_TO_FINAL_POSITION = auto()
     ROBOT_FINISHED = auto()
 
 
@@ -124,7 +125,7 @@ class InspectionNavigator(Node):
         #bridge navigation
         self.bridge_start_position = (0.00, -0.80, -np.pi/2)
         self.bridge_end_position = (-1.75, -6.60, 0.0)
-        self.listen_bridge_nav_node = False
+        self.red_parking_position = (1.24, -6.74, 0.0)
         self.latest_brige_position = None
         self.moving_to_brige_pose = None
 
@@ -132,7 +133,7 @@ class InspectionNavigator(Node):
         self.tts_engine = pyttsx3.init()
         self.cmdr = RobotCommander()
 
-        loop_update_delay_seconds = 1.0
+        loop_update_delay_seconds = 0.5
         self.timer = self.create_timer(loop_update_delay_seconds, self.robot_state_loop)
 
         self.arm_command_pub = self.create_publisher(String, "/arm_command", 10)
@@ -151,8 +152,8 @@ class InspectionNavigator(Node):
         msg = String()
         angle_offset = math.radians(0)
 
-        base_link_bend = 0.45
-        bend_factor = 0.45
+        base_link_bend = 0.3
+        bend_factor = 0.3
         yaw = 0.0
         link1_rotation = base_link_bend
         link2_rotation = bend_factor - base_link_bend
@@ -368,10 +369,6 @@ class InspectionNavigator(Node):
         #     f"→ map yaw: {math.degrees(global_yaw):.1f}°{RESET}"
         # )
 
-
-
-
-
     def robot_state_loop(self):
         self.get_logger().info(f"Current Robot State - {self.robot_state}")
         #current_time = self.get_clock().now()
@@ -383,10 +380,12 @@ class InspectionNavigator(Node):
             if not robot_finished_initializing:
                 self.robot_state = RobotState.INITIALIZING
             else:
-                #self.arm_position_ring_bird_search()
-                #self.robot_state = RobotState.SELECTING_NEW_GOAL
-                self.arm_position_bridge_nav()
-                self.robot_state = RobotState.MOVING_TO_BRIDGE
+                self.arm_position_ring_bird_search()
+                self.robot_state = RobotState.SELECTING_NEW_GOAL
+
+                #debugging bridge nav
+                #self.arm_position_bridge_nav()
+                #self.robot_state = RobotState.MOVING_TO_BRIDGE
 
         elif self.robot_state == RobotState.SELECTING_NEW_GOAL:
 
@@ -403,7 +402,8 @@ class InspectionNavigator(Node):
                 if new_goal_selected:
                     self.robot_state = RobotState.INSPECTING_GOAL
                 else:
-                    self.robot_state = RobotState.ROBOT_FINISHED
+                    self.arm_position_bridge_nav()
+                    self.robot_state = RobotState.MOVING_TO_BRIDGE
 
         elif self.robot_state == RobotState.INSPECTING_GOAL:
 
@@ -446,21 +446,42 @@ class InspectionNavigator(Node):
             crossed_bridge = self.handle_robot_bridge_navigation()
 
             if crossed_bridge:
-                self.robot_state = RobotState.ROBOT_FINISHED
+                self.robot_state = RobotState.GO_TO_FINAL_POSITION
             else:
                 self.robot_state = RobotState.BRIDGE_NAVIGATION
+
+        elif self.robot_state == RobotState.GO_TO_FINAL_POSITION:
+            done_parking = self.handle_robot_moving_to_parking()
+
+            if done_parking:
+                self.robot_state = RobotState.ROBOT_FINISHED
+            else:
+                self.robot_state = RobotState.GO_TO_FINAL_POSITION
 
         elif self.robot_state == RobotState.ROBOT_FINISHED:
             pass
 
-
-
         else:
             self.get_logger().warn(f"Illegal Robot State")
 
+
+    def handle_robot_moving_to_parking(self):
+        rx, ry, ryaw = self.robot_pose
+        tx, ty, tyaw = self.red_parking_position
+
+        dist_to_start = math.hypot(tx - rx, ty - ry)
+        yaw_error = self.normalize_angle_rad(tyaw - ryaw)
+
+        dist_thresh_in_meters = 0.08
+        angle_thresh_in_radians = math.radians(5)
+
+        if dist_to_start < dist_thresh_in_meters and abs(yaw_error) < angle_thresh_in_radians:
+            return True
+
+        self.move_to_position(self.red_parking_position)
+        return False
     
-    def move_to_bridge_position(self, bridge_pose):
-        #self.listen_bridge_nav_node = False
+    def move_to_position(self, bridge_pose):
         self.cmdr.goToPose(bridge_pose)
 
     def normalize_angle_rad(self, angle_rad):
@@ -479,17 +500,15 @@ class InspectionNavigator(Node):
         if dist_to_start < dist_thresh_in_meters and abs(yaw_error) < angle_thresh_in_radians:
             return True
 
-        self.move_to_bridge_position(self.bridge_start_position)
+        self.move_to_position(self.bridge_start_position)
         return False
         
-    
-
     def handle_robot_bridge_navigation(self):
         rx, ry, ryaw = self.robot_pose
         tx, ty, _ = self.bridge_end_position
         dist_to_end = math.hypot(tx - rx, ty - ry)
 
-        if dist_to_end < 0.2:
+        if dist_to_end < 0.6:
             return True
 
         done_with_bridge_move = self.cmdr.isTaskComplete()
@@ -499,21 +518,19 @@ class InspectionNavigator(Node):
             _, _, goal_yaw = self.moving_to_brige_pose
             yaw_error = self.normalize_angle_rad(goal_yaw - ryaw)
 
-            RED = '\033[91m'
-            RESET = '\033[0m'
-
-            self.get_logger().info(f"{RED}[Bridge Nav] Computed goal yaw: {math.degrees(goal_yaw):.1f}°{RESET}")
-            self.get_logger().info(f"{RED}[Current Pose] Robot yaw: {math.degrees(ryaw):.1f}°{RESET}")
-            self.get_logger().info(f"{RED}[Yaw Error] goal - current = {math.degrees(yaw_error):.1f}°{RESET}")
-
+            #RED = '\033[91m'
+            #RESET = '\033[0m'
+            #self.get_logger().info(f"{RED}[Bridge Nav] Computed goal yaw: {math.degrees(goal_yaw):.1f}°{RESET}")
+            #self.get_logger().info(f"{RED}[Current Pose] Robot yaw: {math.degrees(ryaw):.1f}°{RESET}")
+            #self.get_logger().info(f"{RED}[Yaw Error] goal - current = {math.degrees(yaw_error):.1f}°{RESET}")
 
             if abs(yaw_error) > math.radians(7):
-                CYAN = '\033[96m'
-                RESET = '\033[0m'
-                self.get_logger().warning(
-                    f"{CYAN}Yaw misaligned (current: {math.degrees(ryaw):.1f}°, target: {math.degrees(goal_yaw):.1f}°, error: {math.degrees(yaw_error):.1f}°) → retrying same pose{RESET}"
-                )
-                self.move_to_bridge_position(self.moving_to_brige_pose)
+                #CYAN = '\033[96m'
+                #RESET = '\033[0m'
+                #self.get_logger().warning(
+                #    f"{CYAN}Yaw misaligned (current: {math.degrees(ryaw):.1f}°, target: {math.degrees(goal_yaw):.1f}°, error: {math.degrees(yaw_error):.1f}°) → retrying same pose{RESET}"
+                #)
+                self.move_to_position(self.moving_to_brige_pose)
                 return False
 
             # Aligned: go into "waiting for new bridge pose" mode
@@ -524,17 +541,18 @@ class InspectionNavigator(Node):
         # New bridge target received and ready to move
         if done_with_bridge_move and self.latest_brige_position is not None and self.moving_to_brige_pose is None:
             if self.latest_brige_position != getattr(self, "last_used_bridge_pose", None):
-                self.speak("New Bridge Point")
-                self.get_logger().warning(
-                    f"Robot with YAW - {math.degrees(ryaw):.1f}° - Going To New Bridge Pos {self.latest_brige_position}"
-                )
-                self.move_to_bridge_position(self.latest_brige_position)
+                #self.speak("New Bridge Point")
+                #self.get_logger().warning(
+                #    f"Robot with YAW - {math.degrees(ryaw):.1f}° - Going To New Bridge Pos {self.latest_brige_position}"
+                #)
+                self.move_to_position(self.latest_brige_position)
                 self.moving_to_brige_pose = self.latest_brige_position
             else:
-                self.get_logger().info("Waiting for new bridge position...")
-
+                #self.get_logger().info("Waiting for new bridge position...")
+                pass
         elif self.latest_brige_position is None:
-            self.get_logger().warn("No bridge position available")
+            #self.get_logger().warn("No bridge position available")
+            pass
 
         return False
 

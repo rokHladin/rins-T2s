@@ -537,6 +537,10 @@ class RingDetector(Node):
             else:
                 return
             
+            RED = '\033[91m'
+            RESET = '\033[0m'
+            
+            
             if np.isnan(median_depth) or median_depth > self.ring_depth_check:
                 self.get_logger().warn("Ring is too far or invalid depth.")
                 return
@@ -553,10 +557,7 @@ class RingDetector(Node):
                         self.latest_pointcloud, field_names=("x", "y", "z")
                     ).reshape((self.latest_pointcloud.height, self.latest_pointcloud.width, 3))
 
-                    #u,v points of mask ring
                     ys, xs = np.where(mask_ring == 255)
-
-                    #extract point cloud points on ring
                     points_3d = pc_array[ys, xs]
 
                     #filter out nan and zero vectors
@@ -568,6 +569,11 @@ class RingDetector(Node):
                         self.get_logger().warn("Not enough valid 3D points for averaging.")
                         return
 
+                    depth_from_pc = np.median(points_3d[:, 2])
+
+                    self.get_logger().info(f"{RED} DEPTH BUFFER MEASUREMENT {median_depth:.4}{RESET}")
+                    self.get_logger().info(f"{RED} PC BUFFER MEASUREMENT - {depth_from_pc:.4}{RESET}")
+
                     #get ring point cloud center
                     median3d = np.median(valid_points, axis=0)
 
@@ -577,7 +583,7 @@ class RingDetector(Node):
                     stamped.header.frame_id = self.latest_pointcloud.header.frame_id
                     stamped.point.x = float(median3d[0])
                     stamped.point.y = float(median3d[1])
-                    stamped.point.z = float(median3d[2])
+                    stamped.point.z = float(median_depth)
 
                     transform = self.tf_buffer.lookup_transform(
                         target_frame="map",
