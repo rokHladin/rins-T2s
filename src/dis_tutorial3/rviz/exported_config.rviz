@@ -8,7 +8,6 @@ Panels:
         - /TF1
         - /TF1/Tree1
         - /Global Planner1
-        - /Inspection Markers1/Status1
         - /Inspection Markers1/Topic1
       Splitter Ratio: 0.5833333134651184
     Tree Height: 696
@@ -65,6 +64,31 @@ Visualization Manager:
         Expand Link Details: false
         Expand Tree: false
         Link Tree Style: Links in Alphabetic Order
+        arm_base2_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        arm_base_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        arm_elbow_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        arm_shoulder_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        arm_wrist_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
         base_link:
           Alpha: 1
           Show Axes: false
@@ -266,6 +290,39 @@ Visualization Manager:
           Show Axes: false
           Show Trail: false
           Value: true
+        top_camera_imu_frame:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        top_camera_left_camera_frame:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        top_camera_left_camera_optical_frame:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        top_camera_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        top_camera_rgb_camera_frame:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        top_camera_rgb_camera_optical_frame:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        top_camera_right_camera_frame:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        top_camera_right_camera_optical_frame:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
         tower_sensor_plate:
           Alpha: 1
           Show Axes: false
@@ -292,6 +349,16 @@ Visualization Manager:
       Frame Timeout: 15
       Frames:
         All Enabled: false
+        arm_base2_link:
+          Value: true
+        arm_base_link:
+          Value: true
+        arm_elbow_link:
+          Value: true
+        arm_shoulder_link:
+          Value: true
+        arm_wrist_link:
+          Value: true
         base_link:
           Value: false
         bump_front_center:
@@ -396,12 +463,30 @@ Visualization Manager:
           Value: false
         std_dock_link:
           Value: false
+        top_camera_imu_frame:
+          Value: true
+        top_camera_left_camera_frame:
+          Value: true
+        top_camera_left_camera_optical_frame:
+          Value: true
+        top_camera_link:
+          Value: true
+        top_camera_rgb_camera_frame:
+          Value: true
+        top_camera_rgb_camera_optical_frame:
+          Value: true
+        top_camera_right_camera_frame:
+          Value: true
+        top_camera_right_camera_optical_frame:
+          Value: true
         tower_sensor_plate:
           Value: false
         turtlebot4/oakd_rgb_camera_frame/rgbd_camera:
           Value: false
         turtlebot4/rplidar_link/rplidar:
           Value: false
+        turtlebot4/top_camera_rgb_camera_frame/rgbd_camera:
+          Value: true
         wheel_drop_left:
           Value: false
         wheel_drop_right:
@@ -500,13 +585,24 @@ Visualization Manager:
                   turtlebot4/rplidar_link/rplidar:
                     {}
                 tower_sensor_plate:
-                  {}
-              wheel_drop_left:
-                left_wheel:
-                  {}
-              wheel_drop_right:
-                right_wheel:
-                  {}
+                  arm_base_link:
+                    arm_base2_link:
+                      arm_shoulder_link:
+                        arm_elbow_link:
+                          arm_wrist_link:
+                            top_camera_link:
+                              top_camera_imu_frame:
+                                {}
+                              top_camera_left_camera_frame:
+                                top_camera_left_camera_optical_frame:
+                                  {}
+                              top_camera_rgb_camera_frame:
+                                top_camera_rgb_camera_optical_frame:
+                                  turtlebot4/top_camera_rgb_camera_frame/rgbd_camera:
+                                    {}
+                              top_camera_right_camera_frame:
+                                top_camera_right_camera_optical_frame:
+                                  {}
             std_dock_link:
               green_buoy_link:
                 {}
@@ -948,7 +1044,7 @@ Visualization Manager:
       Enabled: true
       Name: Detected Faces
       Namespaces:
-        pushed_faces: true
+        {}
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -968,6 +1064,18 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /ring_markers
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: MarkerArray
+      Namespaces:
+        {}
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /bird_markers
       Value: true
   Enabled: true
   Global Options:

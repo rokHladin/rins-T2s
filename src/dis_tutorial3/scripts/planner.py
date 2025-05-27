@@ -35,7 +35,7 @@ class Planner(Node):
         self.target_offset = 0.2
         self.spacing = 0.3
         self.max_line_length_m = 2.0
-        self.min_clearance_m = 0.3
+        self.min_clearance_m = 0.2
 
     def map_callback(self, msg):
         if self.map_received:

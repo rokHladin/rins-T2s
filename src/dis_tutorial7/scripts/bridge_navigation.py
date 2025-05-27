@@ -12,6 +12,9 @@ from sensor_msgs.msg import Image, PointCloud2
 from sensor_msgs_py import point_cloud2 as pc2
 from std_msgs.msg import Header, String
 from cv_bridge import CvBridge
+from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PointStamped
+from tf_transformations import quaternion_from_euler
 
 import tf2_ros
 import tf2_geometry_msgs
@@ -28,23 +31,35 @@ class BridgeNavigator(Node):
 
         # Subscriptions
         self.sub_rgb = self.create_subscription(Image, "/oakd/rgb/preview/image_raw", self.rgb_callback, qos_profile_sensor_data)
-        #self.sub_pc = self.create_subscription(PointCloud2, "/oakd/rgb/preview/depth/points", self.pc_callback, qos_profile_sensor_data)
         self.sub_arm_cam = self.create_subscription(Image, "/top_camera/rgb/preview/image_raw", self.arm_rgb_callback, qos_profile_sensor_data)
         self.sub_arm_depth = self.create_subscription(Image, "/top_camera/rgb/preview/depth", self.arm_depth_callback, qos_profile_sensor_data)
+        self.sub_arm_pointcloud = self.create_subscription(PointCloud2, "/top_camera/rgb/preview/depth/points", self.pc_callback, qos_profile_sensor_data)
 
+        self.pub_bridge_pose = self.create_publisher(PoseStamped, "/bridge_pose_map", 10)
+        self.latest_pointcloud = None
 
-        self.arm_command_pub = self.create_publisher(String, "/arm_command", 10)
-        self.initial_pose_timer = self.create_timer(3, self.publish_initial_command)
+        #self.arm_command_pub = self.create_publisher(String, "/arm_command", 10)
+        #self.initial_pose_timer = self.create_timer(3, self.publish_initial_command)
+
+        self.display_dict = {
+            "Original (Arm RGB)": np.zeros((240, 320, 3), dtype=np.uint8),
+            "Hue Channel": np.zeros((240, 320), dtype=np.uint8),
+            "Binary (Otsu on Hue)": np.zeros((240, 320), dtype=np.uint8),
+            "After Closing": np.zeros((240, 320), dtype=np.uint8),
+            "Canny Edges": np.zeros((240, 320), dtype=np.uint8),
+            "Fitted Guardrails": np.zeros((240, 320, 3), dtype=np.uint8)
+        }
 
         self.get_logger().info("Bridge mover started")
 
+    def pc_callback(self, msg):
+        self.latest_pointcloud = msg
 
     def publish_initial_command(self):
         msg = String()
         base_link_bend = 0.45
         bend_factor = 0.6
         yaw = 0.0
-
         link1_rotation = base_link_bend
         link2_rotation = bend_factor - base_link_bend
         link3_rotation = np.pi - bend_factor - base_link_bend
@@ -52,7 +67,6 @@ class BridgeNavigator(Node):
         self.arm_command_pub.publish(msg)
         self.get_logger().info("Published initial arm command: look_for_parking")
         self.initial_pose_timer.cancel()
-
 
     def label_image(self, img, label_text):
         font = cv2.FONT_HERSHEY_SIMPLEX
@@ -77,7 +91,6 @@ class BridgeNavigator(Node):
         labeled_images = []
 
         for label, img in image_dict.items():
-            # Convert grayscale to BGR if needed
             if len(img.shape) == 2 or img.shape[2] == 1:
                 img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
 
@@ -85,11 +98,9 @@ class BridgeNavigator(Node):
             padded = self.add_padding(labeled)
             labeled_images.append(padded)
 
-        # Create columns from images
         columns = []
         for i in range(0, len(labeled_images), rows):
             col_imgs = labeled_images[i:i+rows]
-            # Make sure columns have equal length
             if len(col_imgs) < rows:
                 h, w = col_imgs[0].shape[:2]
                 white = np.ones((h, w, 3), dtype=np.uint8) * 255
@@ -103,61 +114,50 @@ class BridgeNavigator(Node):
     def rgb_callback(self, msg):
         try:
             img = self.bridge.imgmsg_to_cv2(msg, "bgr8")
-            cv2.imshow("Front Camera", img)
-            cv2.waitKey(1)
-        except Exception as e:
-            self.get_logger().warn(f"Failed to process front camera image: {e}")
-
+        except Exception:
+            return
 
     def arm_rgb_callback(self, msg):
         try:
             img_bgr = self.bridge.imgmsg_to_cv2(msg, "bgr8")
 
-            # Convert BGR to HSV
             hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
-            hue = hsv[:, :, 0]  # Extract Hue channel
-
-            # Apply Gaussian blur to hue
+            hue = hsv[:, :, 0]
             blurred = cv2.GaussianBlur(hue, (5, 5), 0)
-
-            # Apply Otsu's thresholding on hue
             _, binary = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
             binary = cv2.bitwise_not(binary)
 
-            # Morphological operations to clean mask
             SE_closing = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (25, 25))
             pad = 40
-            binary_padded = cv2.copyMakeBorder(binary, pad, pad, pad, pad,
-                                            borderType=cv2.BORDER_CONSTANT, value=0)
+            binary_padded = cv2.copyMakeBorder(binary, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=0)
             closed_padded = cv2.morphologyEx(binary_padded, cv2.MORPH_CLOSE, SE_closing)
             closed = closed_padded[pad:-pad, pad:-pad]
 
-            # Use Canny edges to get fine lines
             edges = cv2.Canny(closed, 50, 150)
-
-            # Connected components on edges
-            num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(edges, connectivity=8)
 
             height, width = closed.shape
             line_vis = img_bgr.copy()
 
-            min_pixels = 40
-            segment_size = 40
+            self.display_dict["Original (Arm RGB)"] = img_bgr
+            self.display_dict["Hue Channel"] = hue
+            self.display_dict["Binary (Otsu on Hue)"] = binary
+            self.display_dict["After Closing"] = closed
+            self.display_dict["Canny Edges"] = edges
 
-            all_lines = []
-
-            
+            num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(edges, connectivity=8)
             if (num_labels - 1 < 2):
-                self.get_logger().warn(f"Number of edge sections is not enough ({num_labels-1})")
+                self.display_image_grid(self.display_dict)
                 return
 
-            # Loop through each label (skip label 0 = background)
+            min_pixels = 40
+            segment_size = 60
+            all_lines = []
+
             for label in range(1, num_labels):
                 mask = (labels == label).astype(np.uint8)
                 ys, xs = np.nonzero(mask)
                 if len(xs) < min_pixels:
-                    self.get_logger().warn(f"Edge section too small ({len(xs)} pixels)")
-                    return
+                    continue
 
                 points = np.vstack((xs, ys)).T.astype(np.float32).reshape(-1, 1, 2)
                 sorted_indices = np.argsort(points[:, 0, 1])
@@ -165,7 +165,7 @@ class BridgeNavigator(Node):
 
                 num_segments = len(sorted_points) // segment_size
                 for i in range(num_segments):
-                    segment = sorted_points[i * segment_size : (i + 1) * segment_size]
+                    segment = sorted_points[i * segment_size: (i + 1) * segment_size]
                     if len(segment) < 2:
                         continue
 
@@ -187,99 +187,120 @@ class BridgeNavigator(Node):
                         "center": center,
                         "angle": angle_deg,
                         "color": color,
-                        "edge_label" : label
+                        "edge_label": label
                     })
 
-            # Pair detection
             if all_lines:
                 image_center_x = width // 2
-                angle_thresh_deg = 45.0
+                angle_thresh_deg = 60.0
                 min_x_separation = width * 0.2
+                max_x_separation = width * 0.8
+                number_of_pairs_generated = 5
 
-                # Separate into left and right groups
                 left_lines = [l for l in all_lines if l["center"][0] < image_center_x]
                 right_lines = [l for l in all_lines if l["center"][0] >= image_center_x]
 
-                # Sort by Y descending (bottom-most first)
                 left_lines = sorted(left_lines, key=lambda l: -l["center"][1])
                 right_lines = sorted(right_lines, key=lambda l: -l["center"][1])
 
-                best_pair = None
+                
+                valid_pairs = []
 
-                # Try bottom-most pairs first
+                used_left = set()
+                used_right = set()
+
                 for l in left_lines:
+                    if len(valid_pairs) >= number_of_pairs_generated:
+                        break
                     for r in right_lines:
-
-                        if (l['edge_label'] == r['edge_label']):
+                        if len(valid_pairs) >= number_of_pairs_generated:
+                            break
+                        if l['edge_label'] == r['edge_label']:
                             continue
-
-                        # Ensure they're roughly parallel
                         angle_diff = abs(l["angle"] - r["angle"])
                         if angle_diff > 180:
                             angle_diff = 360 - angle_diff
                         if angle_diff > angle_thresh_deg:
                             continue
-
-                        # Ensure they're far enough apart
                         x_diff = abs(l["center"][0] - r["center"][0])
-                        if x_diff < min_x_separation:
+                        if not (min_x_separation <= x_diff <= max_x_separation):
                             continue
+                        if id(l) in used_left or id(r) in used_right:
+                            continue
+                        valid_pairs.append((l, r))
+                        used_left.add(id(l))
+                        used_right.add(id(r))
 
-                        # Found a good-enough pair
-                        best_pair = (l, r)
-                        break  # take the first good pair
-                    if best_pair:
-                        break
-
-                if best_pair:
-                    l, r = best_pair
+                for idx, (l, r) in enumerate(valid_pairs):
                     pair_color = tuple(random.randint(100, 255) for _ in range(3))
                     cv2.line(line_vis, l["pt1"], l["pt2"], pair_color, 3)
                     cv2.line(line_vis, r["pt1"], r["pt2"], pair_color, 3)
 
-                    # Midpoint between guardrails
                     midpoint = np.array([
                         (l["center"][0] + r["center"][0]) // 2,
                         (l["center"][1] + r["center"][1]) // 2
                     ], dtype=np.int32)
 
-                    # Compute direction vectors for both lines
                     l_vec = np.array([l["pt2"][0] - l["pt1"][0], l["pt2"][1] - l["pt1"][1]], dtype=np.float32)
                     r_vec = np.array([r["pt2"][0] - r["pt1"][0], r["pt2"][1] - r["pt1"][1]], dtype=np.float32)
 
-                    # Normalize and average the direction
                     l_dir = l_vec / (np.linalg.norm(l_vec) + 1e-6)
                     r_dir = r_vec / (np.linalg.norm(r_vec) + 1e-6)
                     avg_dir = (l_dir + r_dir) / 2.0
-                    avg_dir /= (np.linalg.norm(avg_dir) + 1e-6)  # Final normalization
+                    avg_dir /= (np.linalg.norm(avg_dir) + 1e-6)
 
-                    # Draw direction vector (extend forward away from robot)
-                    arrow_length = 50  # pixels
-                    tip = (midpoint + (avg_dir * -arrow_length)).astype(int)  # negative to point away
+                    arrow_length = 50
+                    tip = (midpoint + (avg_dir * -arrow_length)).astype(int)
                     cv2.arrowedLine(line_vis, tuple(midpoint), tuple(tip), (255, 255, 0), 3, tipLength=0.2)
-
-                    # Draw midpoint
                     cv2.circle(line_vis, tuple(midpoint), 5, (255, 0, 255), -1)
 
+                    if idx == len(valid_pairs) - 1:
+                        if self.latest_pointcloud is None:
+                            continue
+                        try:
+                            pc_array = pc2.read_points_numpy(self.latest_pointcloud, field_names=("x", "y", "z"))
+                            pc_array = pc_array.reshape((self.latest_pointcloud.height, self.latest_pointcloud.width, 3))
 
-            # Display all stages
-            display_dict = {
-                "Original (Arm RGB)": img_bgr,
-                "Hue Channel": hue,
-                "Binary (Otsu on Hue)": binary,
-                "After Closing": closed,
-                "Canny Edges": edges,
-                "Fitted Guardrails": line_vis
-            }
+                            pt = pc_array[midpoint[1], midpoint[0]]
+                            if not np.all(np.isfinite(pt)) or np.linalg.norm(pt) < 0.05:
+                                continue
 
-            self.display_image_grid(display_dict, window_name="Hue-based Water vs Bridge Masking")
+                            camera_point = PointStamped()
+                            camera_point.header.stamp = self.get_clock().now().to_msg()
+                            camera_point.header.frame_id = self.latest_pointcloud.header.frame_id
+                            camera_point.point.x = float(pt[0])
+                            camera_point.point.y = float(pt[1])
+                            camera_point.point.z = float(pt[2])
+
+                            transform = self.tf_buffer.lookup_transform(
+                                "map",
+                                camera_point.header.frame_id,
+                                rclpy.time.Time(),
+                                timeout=rclpy.duration.Duration(seconds=0.5)
+                            )
+                            map_point = tf2_geometry_msgs.do_transform_point(camera_point, transform)
+
+                            offset = math.radians(90)
+                            yaw = math.atan2(-avg_dir[1], -avg_dir[0]) + offset
+                            qx, qy, qz, qw = quaternion_from_euler(0.0, 0.0, yaw)
+
+                            pose_msg = PoseStamped()
+                            pose_msg.header = map_point.header
+                            pose_msg.pose.position = map_point.point
+                            pose_msg.pose.orientation.x = qx
+                            pose_msg.pose.orientation.y = qy
+                            pose_msg.pose.orientation.z = qz
+                            pose_msg.pose.orientation.w = qw
+
+                            self.pub_bridge_pose.publish(pose_msg)
+                        except Exception as e:
+                            self.get_logger().warn(f"Exception during bridge detection: {e}")
+
+            self.display_dict["Fitted Guardrails"] = line_vis
+            self.display_image_grid(self.display_dict)
 
         except Exception as e:
-            self.get_logger().warn(f"Failed to process arm camera image: {e}")
-
-
-
-
+            self.get_logger().warn(f"Exception during bridge detection: {e}")
 
     def arm_depth_callback(self, msg):
         return
@@ -296,7 +317,8 @@ def main(args=None):
     finally:
         node.destroy_node()
         rclpy.shutdown()
-        cv2.destroyAllWindows()  # Ensure all OpenCV windows are closed on exit
+        cv2.destroyAllWindows()
+
 
 if __name__ == '__main__':
     main()
