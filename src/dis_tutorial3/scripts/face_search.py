@@ -455,6 +455,7 @@ class InspectionNavigator(Node):
             self.cmdr.goToPose((pos[0], pos[1], yaw))
             return
 
+        """
         if self.active_bird_goal:
             rx, ry, _ = self.robot_pose
             tx, ty = self.active_bird_goal
@@ -482,6 +483,7 @@ class InspectionNavigator(Node):
                     self.resume_after_interrupt = None
                     self.cmdr.goToPose(self.active_goal['pose'])
             return
+        """
 
         # === INSPECTION GOALS ===
         if self.active_goal:

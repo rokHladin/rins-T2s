@@ -66,7 +66,7 @@ class BirdDetector(Node):
             return
 
         img_bgr = self.bridge.imgmsg_to_cv2(msg, "bgr8")
-        results = self.yolo_model.predict(source=[img_bgr], conf=0.7, save=False)
+        results = self.yolo_model.predict(source=[img_bgr], conf=0.7, save=False, verbose=False)
 
         boxes = results[0].boxes
 
@@ -124,44 +124,74 @@ class BirdDetector(Node):
             try:
                 transform = self.tf_buffer.lookup_transform('map', msg.header.frame_id, rclpy.time.Time())
                 map_point = tf2_geometry_msgs.do_transform_point(stamped_point, transform).point
-                self.add_to_group(map_point, class_name)
+                robot_position = np.array([
+                    transform.transform.translation.x,
+                    transform.transform.translation.y,
+                    transform.transform.translation.z
+                ])
+                bird_position = np.array([map_point.x, map_point.y, map_point.z])
+                distance = np.linalg.norm(bird_position - robot_position)
+
+                if distance > 1.0:
+                    self.get_logger().info(f"🛑 Skipping bird (too far: {distance:.2f}m)")
+                    continue
+
+                self.add_to_group(map_point, class_name, class_confidence)
             except Exception as e:
                 self.get_logger().warn(f"TF transform failed: {e}")
 
         self.publish_groups()
 
-    def add_to_group(self, point, class_name):
+    def add_to_group(self, point, class_name, confidence):
         position = np.array([point.x, point.y, point.z])
         for group in self.groups:
             if np.linalg.norm(group['position'] - position) < self.group_threshold:
                 group['positions'].append(position)
-                group['classifications'].append(class_name)
+                group['classifications'].append((class_name, confidence))
                 return
 
         self.groups.append({
             'positions': [position],
-            'classifications': [class_name],
+            'classifications': [(class_name, confidence)],
             'position': position
         })
+
 
     def publish_groups(self):
         for group in self.groups:
             if len(group['positions']) >= self.min_detections:
                 avg_pos = np.mean(group['positions'], axis=0)
-                most_common_class = max(set(group['classifications']), key=group['classifications'].count)
-                confidence = group['classifications'].count(most_common_class) / len(group['classifications'])
+
+                # Aggregate classification confidences
+                class_scores = {}
+                total_weight = 0.0
+
+                for cls, conf in group['classifications']:
+                    if cls not in class_scores:
+                        class_scores[cls] = 0.0
+                    class_scores[cls] += conf
+                    total_weight += conf
+
+                if total_weight == 0:
+                    continue
+
+                # Normalize and choose best class
+                normalized_scores = {cls: score / total_weight for cls, score in class_scores.items()}
+                final_class = max(normalized_scores.items(), key=lambda x: x[1])[0]
+                final_confidence = normalized_scores[final_class]
 
                 msg = DetectedBird()
                 msg.header.stamp = self.get_clock().now().to_msg()
                 msg.header.frame_id = 'map'
                 msg.position = Point(x=float(avg_pos[0]), y=float(avg_pos[1]), z=float(avg_pos[2]))
-                msg.class_name = most_common_class
-                msg.confidence = float(confidence)
+                msg.class_name = final_class
+                msg.confidence = float(final_confidence)
 
                 self.bird_pub.publish(msg)
-                self.get_logger().info(f"🟢 Published grouped bird: {most_common_class}, Confidence: {confidence:.2f}, Position: {avg_pos.round(2)}")
+                self.get_logger().info(f"🟢 Published bird: {final_class}, Weighted Confidence: {final_confidence:.2f}, Pos: {avg_pos.round(2)}")
 
                 self.groups.remove(group)
+
 
 def main(args=None):
     rclpy.init(args=args)
