@@ -40,12 +40,11 @@ install(PROGRAMS
   scripts/T2s_scripts/navigator.py
   scripts/T2s_scripts/face_detector.py
   scripts/T2s_scripts/ring_detector.py
-  scripts/detect_people.py
+  scripts/T2s_scripts/bird_detector.py
   scripts/robot_commander.py
   scripts/planner.py
   scripts/face_search.py
   scripts/detect_rings.py
-  scripts/bird_detect.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

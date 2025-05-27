@@ -82,6 +82,16 @@ def generate_launch_description():
         )]
     )
 
+    bird_detector = TimerAction(
+        period=16.0,
+        actions=[Node(
+            package='dis_tutorial3',
+            executable='bird_detector.py',
+            name='bird_detector',
+            output='screen'
+        )]
+    )
+
     navigator = TimerAction(
         period=20.0,
         actions=[Node(
@@ -109,6 +119,7 @@ def generate_launch_description():
         planner_node,
         face_detector,
         ring_detector,
+        bird_detector,
         navigator,
         bridge_nav
     ])
