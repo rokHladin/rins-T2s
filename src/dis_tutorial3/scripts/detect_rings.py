@@ -103,11 +103,13 @@ class RingDetector(Node):
         self.min_ring_width = 2
         self.max_ring_width = 50
         self.min_circle_height = 4
+        self.max_ring_distance = 4 # in meters, used to filter out everything after that with depth
 
         #depth validation params
         self.depth_threshold = 1.5      #min dist between ring center and ring
         self.ring_depth_samples = 10    #number of depth points to check
         self.ring_depth_check = 2.0
+
 
         #color recognition
         self.black_threshold = 0.35
@@ -276,7 +278,7 @@ class RingDetector(Node):
         _, saturation, _ = cv2.split(hsv_image)
 
         #filter out sky from saturation image
-        sky_mask = depth_image == np.inf
+        sky_mask = depth_image > self.max_ring_distance
         masked_sat= saturation.copy()
         masked_sat[sky_mask] = 0
         saturation = masked_sat
@@ -285,9 +287,15 @@ class RingDetector(Node):
         color_mask = cv2.threshold(saturation, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
         
         #preprocess the mask with morphology operations
-        SE = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        # SE = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         processed_mask = cv2.dilate(color_mask, None, iterations=1)
-        processed_mask = cv2.morphologyEx(processed_mask, cv2.MORPH_CLOSE, SE, iterations=2)
+
+        # processed_mask = cv2.morphologyEx(processed_mask, cv2.MORPH_CLOSE, SE, iterations=1)
+
+        # Display processed mask for visualization
+        # if self.draw_visualization_windows:
+        #     cv2.imshow("Processed Mask", processed_mask)
+        #     cv2.waitKey(1)
 
         #run canny edge detection and extract contours
         canny_edges = cv2.Canny(processed_mask, 50, 150)
@@ -337,10 +345,10 @@ class RingDetector(Node):
                 if center_dist > self.max_center_distance:
                     continue
                 
-                #check if their angles match
-                angle_diff = np.abs(e1[2] - e2[2])
-                if angle_diff > self.max_angle_diff:
-                    continue
+                # #check if their angles match
+                # angle_diff = np.abs(e1[2] - e2[2])
+                # if angle_diff > self.max_angle_diff:
+                #     continue
                 
                 #determine outter ellipse
                 e1_area = np.pi * e1[1][0] * e1[1][1] / 4

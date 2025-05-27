@@ -21,6 +21,7 @@ import cv2
 from robot_commander import RobotCommander
 from dis_tutorial3.msg import DetectedFace
 from dis_tutorial3.msg import DetectedRing
+from dis_tutorial3.msg import DetectedBird
 
 from geometry_msgs.msg import PoseWithCovarianceStamped
 
@@ -59,6 +60,7 @@ class InspectionNavigator(Node):
         self.initial_pose_pub = self.create_publisher(PoseWithCovarianceStamped, '/initialpose', 10)
         self.pushed_face_pub = self.create_publisher(Marker, '/pushed_faces', 10)
         self.pub_ring_marker = self.create_publisher(MarkerArray, '/ring_markers', 10)
+        self.pub_bird_marker = self.create_publisher(MarkerArray, '/bird_markers', 10)
 
         self.create_subscription(
             DetectedFace,
@@ -72,6 +74,13 @@ class InspectionNavigator(Node):
             DetectedRing,
             '/ring_position',
             self.ring_callback,
+            qos_profile_sensor_data
+        )
+
+        self.create_subscription(
+            DetectedBird,
+            '/detected_birds',
+            self.bird_callback,
             qos_profile_sensor_data
         )
 
@@ -121,6 +130,11 @@ class InspectionNavigator(Node):
         self.ring_color = None
         self.visit_ring_position =None
         self.ring_visit_dist = 0.6
+
+        #bird detection
+        self.seen_birds = set()
+        self.bird_data = {}  # {(x, y): {'classifications': [str], 'visited': bool}}
+        self.bird_queue = deque()
         
         #bridge navigation
         self.bridge_start_position = (0.00, -0.80, -np.pi/2)
@@ -278,6 +292,38 @@ class InspectionNavigator(Node):
 
         self.publish_ring_marker(new_pos)
         self.get_logger().info(f"🔔 Ring detected at {new_pos} with color '{color}'")
+
+    def bird_callback(self, msg: DetectedBird):
+        pos = (msg.position.x, msg.position.y)
+        class_name = msg.class_name.lower()
+
+        if not np.all(np.isfinite(pos)):
+            self.get_logger().warn("Discarded invalid bird with NaNs.")
+            return
+
+        # If the bird is near a known bird, group it
+        # Find nearby existing bird entry or create new
+        existing_pos = None
+        for known_pos in self.bird_data:
+            if np.linalg.norm(np.array(pos) - np.array(known_pos)) < 0.5:
+                existing_pos = known_pos
+                break
+
+        if existing_pos:
+            # Update classification and confidence
+            if not self.bird_data[existing_pos]['visited']:
+                self.bird_data[existing_pos]['class_name'] = class_name
+                self.bird_data[existing_pos]['confidence'] = msg.confidence
+        else:
+            # Add new entry
+            self.bird_data[pos] = {
+                'class_name': class_name,
+                'confidence': msg.confidence,
+                'visited': False
+            }
+            self.bird_queue.append(pos)
+            self.publish_bird_marker(pos, class_name)
+            self.get_logger().info(f"🕊️ New bird found at {pos} ({class_name})")
 
     def map_callback(self, msg):
         self.resolution = msg.info.resolution
@@ -815,6 +861,46 @@ class InspectionNavigator(Node):
         marker.color.b = 0.0
         marker.color.a = 1.0
         self.pub_ring_marker.publish(MarkerArray(markers=[marker]))
+
+    def publish_bird_marker(self, position, class_name=""):
+        marker = Marker()
+        marker.header.frame_id = "map"
+        marker.header.stamp = self.get_clock().now().to_msg()
+        marker.ns = "birds"
+        marker.id = int(position[0] * 1000) + int(position[1] * 1000)
+        marker.type = Marker.SPHERE
+        marker.action = Marker.ADD
+        marker.pose.position.x = position[0]
+        marker.pose.position.y = position[1]
+        marker.pose.position.z = 0.0
+        marker.scale.x = 0.15
+        marker.scale.y = 0.15
+        marker.scale.z = 0.05
+        marker.color.r = 1.0
+        marker.color.g = 0.0
+        marker.color.b = 1.0
+        marker.color.a = 1.0
+
+        # Optional: add label marker
+        label = Marker()
+        label.header.frame_id = "map"
+        label.header.stamp = marker.header.stamp
+        label.ns = "birds"
+        label.id = marker.id + 1000000
+        label.type = Marker.TEXT_VIEW_FACING
+        label.action = Marker.ADD
+        label.pose.position.x = position[0]
+        label.pose.position.y = position[1]
+        label.pose.position.z = 0.2
+        label.scale.z = 0.12  # text height
+        label.color.r = 1.0
+        label.color.g = 1.0
+        label.color.b = 1.0
+        label.color.a = 1.0
+        label.text = class_name
+
+        self.pub_bird_marker.publish(MarkerArray(markers=[marker, label]))
+
 
     def publish_pushed_face_marker(self, position, normal=None):
         # Red dot for the face position
