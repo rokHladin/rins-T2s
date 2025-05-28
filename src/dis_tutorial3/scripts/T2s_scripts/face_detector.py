@@ -5,6 +5,7 @@ import math
 import random
 import numpy as np
 import cv2
+from PIL import Image as PILImage
 
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
@@ -19,6 +20,10 @@ import tf2_ros
 import tf2_geometry_msgs
 from ultralytics import YOLO
 
+# Gender classification
+from transformers import pipeline, AutoImageProcessor, AutoModelForImageClassification
+import torch
+
 from dis_tutorial3.msg import DetectedFace  # Custom message
 
 class FaceDetector(Node):
@@ -27,14 +32,31 @@ class FaceDetector(Node):
         self.device = self.declare_parameter('device', '').get_parameter_value().string_value
 
         self.bridge = CvBridge()
-        self.faces = []
+        self.faces = []  # Now stores (cx, cy, gender, confidence)
         self.face_groups = []
         self.detected_faces_sent = set()
 
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
+        # YOLO model for face detection
         self.model = YOLO("yolov8n.pt")
+        
+        # Gender classification model
+        self.get_logger().info("Loading gender classification model...")
+        try:
+            self.gender_processor = AutoImageProcessor.from_pretrained("dima806/fairface_gender_image_detection")
+            self.gender_model = AutoModelForImageClassification.from_pretrained("dima806/fairface_gender_image_detection")
+            
+            # Set device for gender model
+            if self.device and torch.cuda.is_available():
+                self.gender_model = self.gender_model.to(self.device)
+            
+            self.get_logger().info("✅ Gender classification model loaded successfully")
+        except Exception as e:
+            self.get_logger().error(f"Failed to load gender model: {e}")
+            self.gender_model = None
+            self.gender_processor = None
 
         self.sub_rgb = self.create_subscription(Image, "/oakd/rgb/preview/image_raw", self.rgb_callback, qos_profile_sensor_data)
         self.sub_pc = self.create_subscription(PointCloud2, "/oakd/rgb/preview/depth/points", self.pc_callback, qos_profile_sensor_data)
@@ -56,16 +78,63 @@ class FaceDetector(Node):
             img = self.bridge.imgmsg_to_cv2(msg, "bgr8")
             results = self.model.predict(img, imgsz=(256, 320), conf = self.face_confidence_threshold, show=False, verbose=False, classes=[0], device=self.device)
 
+            # Create a copy of the image for display
+            display_img = img.copy()
+            
             for r in results:
                 for bbox in r.boxes.xyxy.cpu().numpy():
                     x1, y1, x2, y2 = map(int, bbox)
                     cx = (x1 + x2) // 2
                     cy = (y1 + y2) // 2
-                    self.faces.append((cx, cy))
+                    
+                    # Extract face region for gender classification
+                    face_region = img[y1:y2, x1:x2]
+                    
+                    # Classify gender if face region is large enough
+                    if face_region.shape[0] > 30 and face_region.shape[1] > 30:
+                        gender, confidence = self.classify_gender(face_region)
+                    else:
+                        gender, confidence = "unknown", 0.0
+                    
+                    self.faces.append((cx, cy, gender, confidence))
+                    
+                    # Choose color based on gender: blue for men, pink for women, green for unknown
+                    if gender == "man":
+                        color = (255, 0, 0)  # Blue in BGR
+                        label_text = f"Man ({confidence:.2f})"
+                    elif gender == "woman":
+                        color = (255, 0, 255)  # Pink/Magenta in BGR
+                        label_text = f"Woman ({confidence:.2f})"
+                    else:
+                        color = (0, 255, 0)  # Green for unknown
+                        label_text = f"Unknown"
+                    
+                    # Draw bounding box around detected face
+                    cv2.rectangle(display_img, (x1, y1), (x2, y2), color, 2)
+                    
+                    # Add label
+                    cv2.putText(display_img, label_text, (x1, y1 - 10), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                    
+                    # Draw center point
+                    cv2.circle(display_img, (cx, cy), 3, (0, 0, 255), -1)
+
+            # Add status text
+            status_text = f"Faces detected: {len(self.faces)}"
+            cv2.putText(display_img, status_text, (10, 30), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            
+            # Display the image
+            cv2.imshow('Face Detection - Press Q to quit', display_img)
+            
+            # Handle window events (non-blocking)
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q'):
+                self.get_logger().info("Quit key pressed. Shutting down...")
+                rclpy.shutdown()
 
         except Exception as e:
             self.get_logger().warn(f"Failed to process image: {e}")
-
 
     def pc_callback(self, msg):
         if not self.faces:
@@ -77,8 +146,9 @@ class FaceDetector(Node):
             self.get_logger().warn(f"Failed to parse point cloud: {e}")
             return
 
-        for cx, cy in self.faces:
-            self.get_logger().warn(f"Face found at ({cx},{cy})")
+        for face_data in self.faces:
+            cx, cy, gender, confidence = face_data
+            self.get_logger().warn(f"Face found at ({cx},{cy}) - {gender} ({confidence:.2f})")
 
             pc_check_depth = pc_array[cy, cx, :]
             if np.isnan(pc_check_depth).any() or np.linalg.norm(pc_check_depth) > self.face_depth_check:
@@ -157,12 +227,13 @@ class FaceDetector(Node):
 
                 self.add_to_group(
                     np.array([transformed.point.x, transformed.point.y, transformed.point.z]),
-                    map_normal
+                    map_normal,
+                    gender,
+                    confidence
                 )
 
             except Exception as e:
                 self.get_logger().warn(f"TF transform failed: {e}")
-
 
     def fit_plane(self, points, threshold=0.015, max_iters=100):
         best_inliers = []
@@ -200,13 +271,15 @@ class FaceDetector(Node):
         return None, None
 
     
-    def add_to_group(self, new_point, normal, threshold=0.5):
+    def add_to_group(self, new_point, normal, gender, confidence, threshold=0.5):
         for group in self.face_groups:
             if np.linalg.norm(group['point'] - new_point) < threshold:
                 group['points'].append(new_point)
                 group['normals'].append(normal)
+                group['genders'].append(gender)
+                group['confidences'].append(confidence)
                 return
-        self.face_groups.append({'points': [new_point], 'normals': [normal], 'point': new_point})
+        self.face_groups.append({'points': [new_point], 'normals': [normal], 'genders': [gender], 'confidences': [confidence], 'point': new_point})
 
     def publish_new_faces(self):
         for i, group in enumerate(self.face_groups):
@@ -216,6 +289,20 @@ class FaceDetector(Node):
 
             avg_pos = np.mean(group['points'], axis=0)
             avg_norm = np.mean(group['normals'], axis=0)
+            
+            # Determine most common gender
+            genders = group['genders']
+            confidences = group['confidences']
+            
+            # Find the most confident gender prediction
+            if genders and confidences:
+                max_conf_idx = np.argmax(confidences)
+                best_gender = genders[max_conf_idx]
+                best_confidence = confidences[max_conf_idx]
+            else:
+                best_gender = "unknown"
+                best_confidence = 0.0
+            
             key = tuple(np.round(avg_pos, 2))
 
             if key in self.detected_faces_sent:
@@ -234,20 +321,98 @@ class FaceDetector(Node):
             msg.normal.y = float(avg_norm[1])
             msg.normal.z = float(avg_norm[2])
 
+            # Add gender information (you may need to add these fields to your DetectedFace message)
+            # For now, we'll log it and you can add to the message definition if needed
+            
             self.face_pub.publish(msg)
             self.detected_faces_sent.add(key)
 
             self.get_logger().info(
-                f"🧍 Published reliable face (n={len(group['points'])}) at {avg_pos}, normal: {avg_norm}"
+                f"🧍 Published reliable face (n={len(group['points'])}) at {avg_pos}, normal: {avg_norm}, gender: {best_gender} ({best_confidence:.2f})"
             )
     
+    def destroy_node(self):
+        """Clean up OpenCV windows when node is destroyed"""
+        cv2.destroyAllWindows()
+        super().destroy_node()
+
+    def classify_gender(self, face_img):
+        """Classify gender of a face image"""
+        if self.gender_model is None or self.gender_processor is None:
+            return "unknown", 0.0
+        
+        try:
+            # Convert BGR to RGB
+            face_rgb = cv2.cvtColor(face_img, cv2.COLOR_BGR2RGB)
+            pil_image = PILImage.fromarray(face_rgb)
+            
+            # Process the image
+            inputs = self.gender_processor(pil_image, return_tensors="pt")
+            
+            if self.device and torch.cuda.is_available():
+                inputs = {k: v.to(self.device) for k, v in inputs.items()}
+            
+            # Get prediction
+            with torch.no_grad():
+                outputs = self.gender_model(**inputs)
+                predictions = torch.nn.functional.softmax(outputs.logits, dim=-1)
+                
+            # Get the predicted class and confidence
+            predicted_class_id = predictions.argmax().item()
+            confidence = predictions.max().item()
+            
+            # Map class ID to gender (this may need adjustment based on the model's labels)
+            # For fairface model: typically 0=Female, 1=Male
+            gender = "woman" if predicted_class_id == 0 else "man"
+            
+            return gender, confidence
+            
+        except Exception as e:
+            self.get_logger().warn(f"Gender classification failed: {e}")
+            return "unknown", 0.0
+
+    def get_latest_face_genders(self):
+        """Get the latest detected faces with their gender classifications"""
+        face_genders = []
+        for face_data in self.faces:
+            cx, cy, gender, confidence = face_data
+            face_genders.append({
+                'position': (cx, cy),
+                'gender': gender,
+                'confidence': confidence
+            })
+        return face_genders
+    
+    def get_most_confident_gender(self):
+        """Get the gender of the most confidently detected face"""
+        if not self.faces:
+            return None, 0.0
+        
+        max_confidence = 0.0
+        best_gender = None
+        
+        for face_data in self.faces:
+            cx, cy, gender, confidence = face_data
+            if confidence > max_confidence and gender != "unknown":
+                max_confidence = confidence
+                best_gender = gender
+        
+        return best_gender, max_confidence
+
 def main(args=None):
     rclpy.init(args=args)
     node = FaceDetector()
-    rclpy.spin(node)
-    node.destroy_node()
-    rclpy.shutdown()
+    
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        node.get_logger().info("Keyboard interrupt received. Shutting down...")
+    except Exception as e:
+        node.get_logger().error(f"Unexpected error: {e}")
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+        cv2.destroyAllWindows()
 
 if __name__ == '__main__':
     main()
-
