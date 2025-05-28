@@ -17,6 +17,7 @@ import tf2_geometry_msgs
 from sensor_msgs_py import point_cloud2 as pc2
 from rclpy.qos import qos_profile_sensor_data
 
+from std_msgs.msg import String
 from dis_tutorial3.msg import DetectedBird
 
 class BirdDetector(Node):
@@ -30,6 +31,15 @@ class BirdDetector(Node):
         self.bridge = CvBridge()
         self.sub_image = self.create_subscription(Image, "/top_camera/rgb/preview/image_raw", self.image_callback, 10)
         self.bird_pub = self.create_publisher(DetectedBird, "/detected_birds", 10)
+
+        self.sub_robot_state = self.create_subscription(
+            String,
+            '/robot_internal_state',
+            self.state_callback,
+            10
+        )
+        self.robot_state = None
+        self.state_override = False
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.resnet = models.resnet18(weights=None)
@@ -57,10 +67,17 @@ class BirdDetector(Node):
 
         self.get_logger().info("🦜 Bird detection node ready")
 
+    def state_callback(self, msg):
+        self.robot_state = msg.data
+
     def pc_callback(self, msg):
         self.latest_pointcloud = msg
 
     def image_callback(self, msg):
+
+        if (self.robot_state is None or (self.robot_state != "INSPECTING_GOAL" and self.robot_state != "SELECTING_NEW_GOAL")) and self.state_override is False:
+            return
+
         if self.latest_pointcloud is None:
             self.get_logger().warn("No point cloud received yet.")
             return

@@ -408,7 +408,6 @@ class InspectionNavigator(Node):
         self.tts_engine.runAndWait()
         time.sleep(0.2) 
 
-
     def bridge_pose_callback(self, msg: PoseStamped):
         x = msg.pose.position.x
         y = msg.pose.position.y
@@ -453,6 +452,11 @@ class InspectionNavigator(Node):
 
             if new_goal_selected:
                 self.robot_state = RobotState.INSPECTING_GOAL
+
+                #temporary debug state transition
+                if self.face_queue:
+                    self.robot_state = RobotState.SELECTING_PERSON
+
             else:
                 #self.arm_position_bridge_nav()
                 #self.robot_state = RobotState.MOVING_TO_BRIDGE
@@ -691,10 +695,14 @@ class InspectionNavigator(Node):
             return True
         
         gender = Gender.MAN if self.current_face[2] == "man" else Gender.WOMAN
-        fav_bird = run_bird_dialogue(gender=gender, use_keyboard=True, disable_tts=False)
+        birds = list(self.bird_queue)
+        rings = list(self.ring_queue)
+
+        run_bird_dialogue_gui(gender=gender, rings=rings, birds=birds)
 
         self.current_face = None
         return True
+    
     # def handle_robot_detected_ring_selection(self):
     #     if self.ring_queue:
     #         ring, color = self.ring_queue.popleft()
