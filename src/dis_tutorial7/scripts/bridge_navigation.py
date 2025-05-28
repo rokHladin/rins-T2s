@@ -38,6 +38,15 @@ class BridgeNavigator(Node):
         self.pub_bridge_pose = self.create_publisher(PoseStamped, "/bridge_pose_map", 10)
         self.latest_pointcloud = None
 
+        self.sub_robot_state = self.create_subscription(
+            String,
+            '/robot_internal_state',
+            self.state_callback,
+            10
+        )
+        self.robot_state = None
+        self.state_override = False
+
         #self.arm_command_pub = self.create_publisher(String, "/arm_command", 10)
         #self.initial_pose_timer = self.create_timer(3, self.publish_initial_command)
 
@@ -51,6 +60,9 @@ class BridgeNavigator(Node):
         }
 
         self.get_logger().info("Bridge mover started")
+
+    def state_callback(self, msg):
+        self.robot_state = msg.data
 
     def pc_callback(self, msg):
         self.latest_pointcloud = msg
@@ -118,6 +130,10 @@ class BridgeNavigator(Node):
             return
 
     def arm_rgb_callback(self, msg):
+
+        if (self.robot_state is None or (self.robot_state != "BRIDGE_NAVIGATION" and self.robot_state != "GO_TO_FINAL_POSITION")) and self.state_override is False:
+            return
+
         try:
             img_bgr = self.bridge.imgmsg_to_cv2(msg, "bgr8")
 

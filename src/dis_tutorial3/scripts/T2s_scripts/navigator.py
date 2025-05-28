@@ -12,6 +12,10 @@ import transforms3d.euler
 import heapq
 from collections import deque
 from geometry_msgs.msg import PointStamped
+from geometry_msgs.msg import Point
+import time
+
+
 
 from std_msgs.msg import ColorRGBA, String
 from sensor_msgs.msg import Image
@@ -22,6 +26,7 @@ from robot_commander import RobotCommander
 from dis_tutorial3.msg import DetectedFace
 from dis_tutorial3.msg import DetectedRing
 from dis_tutorial3.msg import DetectedBird
+from T2s_custom_modules.dialogue import *
 
 from geometry_msgs.msg import PoseWithCovarianceStamped
 
@@ -34,8 +39,8 @@ class RobotState(Enum):
     INITIALIZING = auto()
     SELECTING_NEW_GOAL = auto()
     INSPECTING_GOAL = auto()
-    SERVICE_FACE_DETECTION = auto()
-    SERIVICE_RING_DETECTION = auto()
+    SELECTING_PERSON = auto()
+    SERVICE_CONVERSATION = auto()
     MOVING_TO_BRIDGE = auto()
     BRIDGE_NAVIGATION = auto()
     GO_TO_FINAL_POSITION = auto()
@@ -61,6 +66,10 @@ class InspectionNavigator(Node):
         self.pushed_face_pub = self.create_publisher(Marker, '/pushed_faces', 10)
         self.pub_ring_marker = self.create_publisher(MarkerArray, '/ring_markers', 10)
         self.pub_bird_marker = self.create_publisher(MarkerArray, '/bird_markers', 10)
+
+        self.robot_state_pub = self.create_publisher(String, '/robot_internal_state', 10)
+
+        self.arm_command_pub = self.create_publisher(String, "/arm_command", 10)
 
         self.create_subscription(
             DetectedFace,
@@ -124,17 +133,19 @@ class InspectionNavigator(Node):
         #face detection and ring detection
         self.face_queue = deque()
         self.ring_queue = deque()
+        self.bird_queue = deque()
         self.seen_faces = set()
         self.seen_rings = set()
-
-        self.ring_color = None
-        self.visit_ring_position =None
-        self.ring_visit_dist = 0.6
-
-        #bird detection
         self.seen_birds = set()
+
         self.bird_data = {}  # {(x, y): {'classifications': [str], 'visited': bool}}
-        self.bird_queue = deque()
+
+        self.current_face = None
+
+        #self.ring_color = None
+        #self.visit_ring_position =None
+        #self.ring_visit_dist = 0.6
+        
         
         #bridge navigation
         self.bridge_start_position = (0.00, -0.80, -np.pi/2)
@@ -150,7 +161,12 @@ class InspectionNavigator(Node):
         loop_update_delay_seconds = 0.5
         self.timer = self.create_timer(loop_update_delay_seconds, self.robot_state_loop)
 
-        self.arm_command_pub = self.create_publisher(String, "/arm_command", 10)
+        
+
+    def publish_robot_state(self):
+        msg = String()
+        msg.data = str(self.robot_state.name)
+        self.robot_state_pub.publish(msg)
 
     def arm_position_ring_bird_search(self):
         msg = String()
@@ -242,6 +258,7 @@ class InspectionNavigator(Node):
     def face_callback(self, msg: DetectedFace):
         new_pos = np.array([msg.position.x, msg.position.y])
         normal = (msg.normal.x, msg.normal.y)
+        gender = msg.gender
 
         # Push position if too close to wall
         safe_pos = self.push_face_from_wall(new_pos)
@@ -259,7 +276,7 @@ class InspectionNavigator(Node):
         face_pos = (msg.position.x, msg.position.y)
 
         # Prevent excessive closeness duplicates
-        for pos, _ in self.face_queue:
+        for pos, _, _ in self.face_queue:
             if math.hypot(pos[0] - safe_pos[0], pos[1] - safe_pos[1]) < 0.5:
                 return
 
@@ -267,8 +284,8 @@ class InspectionNavigator(Node):
             self.get_logger().warn("Discarded invalid face with NaNs.")
             return
 
-        self.face_queue.append((safe_pos, normal))
-        self.publish_pushed_face_marker(safe_pos, normal)
+        self.face_queue.append((safe_pos, normal, gender))
+        self.publish_pushed_face_marker(safe_pos, normal, gender)
         self.get_logger().info(f"👤 Received new face at ({new_pos})")
 
     def ring_callback(self, msg: DetectedRing):
@@ -290,7 +307,7 @@ class InspectionNavigator(Node):
         self.ring_queue.append((ring_pos, color))
         # Store or log color as needed
 
-        self.publish_ring_marker(new_pos)
+        self.publish_ring_marker(new_pos, color)
         self.get_logger().info(f"🔔 Ring detected at {new_pos} with color '{color}'")
 
     def bird_callback(self, msg: DetectedBird):
@@ -301,8 +318,6 @@ class InspectionNavigator(Node):
             self.get_logger().warn("Discarded invalid bird with NaNs.")
             return
 
-        # If the bird is near a known bird, group it
-        # Find nearby existing bird entry or create new
         existing_pos = None
         for known_pos in self.bird_data:
             if np.linalg.norm(np.array(pos) - np.array(known_pos)) < 0.5:
@@ -323,6 +338,7 @@ class InspectionNavigator(Node):
             }
             self.bird_queue.append(pos)
             self.publish_bird_marker(pos, class_name)
+            self.speak(f"{class_name}")
             self.get_logger().info(f"🕊️ New bird found at {pos} ({class_name})")
 
     def map_callback(self, msg):
@@ -386,10 +402,12 @@ class InspectionNavigator(Node):
         return transforms3d.euler.quat2euler([q.w, q.x, q.y, q.z])[2]
 
     def speak(self, text):
-        self.tts_engine.setProperty('rate', 150)  # Speed of speech
-        self.tts_engine.setProperty('volume', 0.6)  # Volume level (0.0 to 1.0)
+        self.tts_engine.setProperty('rate', 120)
+        self.tts_engine.setProperty('volume', 0.6)
         self.tts_engine.say(text)
         self.tts_engine.runAndWait()
+        time.sleep(0.2) 
+
 
     def bridge_pose_callback(self, msg: PoseStamped):
         x = msg.pose.position.x
@@ -427,29 +445,18 @@ class InspectionNavigator(Node):
                 self.robot_state = RobotState.INITIALIZING
             else:
                 self.arm_position_ring_bird_search()
-                self.robot_state = RobotState.SELECTING_NEW_GOAL
-
-                #debugging bridge nav
-                #self.arm_position_bridge_nav()
-                #self.robot_state = RobotState.MOVING_TO_BRIDGE
+                self.robot_state = RobotState.SELECTING_NEW_GOAL                
 
         elif self.robot_state == RobotState.SELECTING_NEW_GOAL:
 
-            selected_detected_face_to_visit = self.handle_robot_detected_face_selection()
+            new_goal_selected = self.handle_robot_selecting_new_inspection_goal()
 
-            if selected_detected_face_to_visit:
-                self.robot_state = RobotState.SERVICE_FACE_DETECTION
-            elif self.handle_robot_detected_ring_selection():
-                #function call in elif condition intentional - if both detected face and ring are available, popping both at the same time could pose issues 
-                self.robot_state = RobotState.SERIVICE_RING_DETECTION
+            if new_goal_selected:
+                self.robot_state = RobotState.INSPECTING_GOAL
             else:
-                new_goal_selected = self.handle_robot_selecting_new_inspection_goal()
-
-                if new_goal_selected:
-                    self.robot_state = RobotState.INSPECTING_GOAL
-                else:
-                    self.arm_position_bridge_nav()
-                    self.robot_state = RobotState.MOVING_TO_BRIDGE
+                #self.arm_position_bridge_nav()
+                #self.robot_state = RobotState.MOVING_TO_BRIDGE
+                self.robot_state = RobotState.SELECTING_PERSON
 
         elif self.robot_state == RobotState.INSPECTING_GOAL:
 
@@ -460,23 +467,24 @@ class InspectionNavigator(Node):
             else:
                 self.robot_state = RobotState.INSPECTING_GOAL
 
-        elif self.robot_state == RobotState.SERVICE_FACE_DETECTION:
+        elif self.robot_state == RobotState.SELECTING_PERSON:
+
+            selected_a_face = self.handle_robot_detected_face_selection()
+
+            if selected_a_face:
+                self.robot_state = RobotState.SERVICE_CONVERSATION
+            else:
+                self.arm_position_bridge_nav()
+                self.robot_state = RobotState.MOVING_TO_BRIDGE
+
+        elif self.robot_state == RobotState.SERVICE_CONVERSATION:
 
             finished_visiting_detected_face = self.handle_robot_visiting_face()
-            
+
             if finished_visiting_detected_face:
-                self.robot_state = RobotState.SELECTING_NEW_GOAL
+                self.robot_state = RobotState.SELECTING_PERSON
             else:
-                self.robot_state = RobotState.SERVICE_FACE_DETECTION
-
-        elif self.robot_state == RobotState.SERIVICE_RING_DETECTION:
-
-            finished_visiting_detected_ring = self.handle_robot_visiting_ring()
-
-            if finished_visiting_detected_ring:
-                self.robot_state = RobotState.SELECTING_NEW_GOAL
-            else:
-                self.robot_state = RobotState.SERIVICE_RING_DETECTION
+                self.robot_state = RobotState.SERVICE_CONVERSATION
 
         elif self.robot_state == RobotState.MOVING_TO_BRIDGE:
             done_moving_to_bridge_start = self.handle_robot_moving_to_bridge()
@@ -509,6 +517,8 @@ class InspectionNavigator(Node):
 
         else:
             self.get_logger().warn(f"Illegal Robot State")
+
+        self.publish_robot_state()
 
 
     def handle_robot_moving_to_parking(self):
@@ -666,56 +676,63 @@ class InspectionNavigator(Node):
 
             self.cmdr.goToPose((x, y, yaw))
             self.get_logger().info(f"🧠 Navigating to detected face at {face}")
-            return True
-        return False
-
-    def handle_robot_detected_ring_selection(self):
-        if self.ring_queue:
-            ring, color = self.ring_queue.popleft()
-            
-            rx, ry, _ = self.robot_pose
-            tx, ty = ring
-            yaw = math.atan2(ty - ry, tx - rx)
-            self.cmdr.goToPose((tx, ty, yaw))
-
-            self.ring_color = color
-            self.visit_ring_position = ring
-            self.get_logger().info(f"🟡 Navigating to ring at {ring} (color: {color})")
+            self.current_face = face
             return True
         return False
 
     def handle_robot_visiting_face(self):
-        finished_visiting_face = self.cmdr.isTaskComplete()
-
-        if finished_visiting_face:
-            self.speak(f"Hello Persons")
-            self.get_logger().info("✅ Finished visiting face")
+        got_to_face = self.cmdr.isTaskComplete()
+        
+        if not got_to_face:
+            return False
+        
+        if self.current_face is None:
+            #failsafe
             return True
-        return False
+        
+        gender = Gender.MAN if self.current_face[2] == "man" else Gender.WOMAN
+        fav_bird = run_bird_dialogue(gender=gender, use_keyboard=True, disable_tts=False)
 
-    def handle_robot_visiting_ring(self):
-        rx, ry, _ = self.robot_pose
-        tx, ty = self.visit_ring_position
-        dist = math.hypot(tx - rx, ty - ry)
+        self.current_face = None
+        return True
+    # def handle_robot_detected_ring_selection(self):
+    #     if self.ring_queue:
+    #         ring, color = self.ring_queue.popleft()
+            
+    #         rx, ry, _ = self.robot_pose
+    #         tx, ty = ring
+    #         yaw = math.atan2(ty - ry, tx - rx)
+    #         self.cmdr.goToPose((tx, ty, yaw))
 
-        finished_visiting_ring = self.cmdr.isTaskComplete()
-        in_ring_proximity = dist < self.ring_visit_dist
-        self.get_logger().info(f"IN RING PROXIMITY - {in_ring_proximity}")
+    #         self.ring_color = color
+    #         self.visit_ring_position = ring
+    #         self.get_logger().info(f"🟡 Navigating to ring at {ring} (color: {color})")
+    #         return True
+    #     return False
 
-        #timeout_elapsed = (
-        #    hasattr(self, "interrupt_start_time") and 
-        #    (now - self.interrupt_start_time).nanoseconds > 20 * 1e9  # 20 seconds
-        #)
+    # def handle_robot_visiting_ring(self):
+    #     rx, ry, _ = self.robot_pose
+    #     tx, ty = self.visit_ring_position
+    #     dist = math.hypot(tx - rx, ty - ry)
 
-        if finished_visiting_ring or in_ring_proximity:
-            self.cmdr.cancelTask()
-            self.speak(f"This is a {self.ring_color} ring")
-            self.ring_color = None
-            self.visit_ring_position = None
+    #     finished_visiting_ring = self.cmdr.isTaskComplete()
+    #     in_ring_proximity = dist < self.ring_visit_dist
+    #     self.get_logger().info(f"IN RING PROXIMITY - {in_ring_proximity}")
 
-            self.get_logger().info("✅ Reached or finished ring. Canceling goal and resuming inspection.")
-            return True
-        return False
+    #     #timeout_elapsed = (
+    #     #    hasattr(self, "interrupt_start_time") and 
+    #     #    (now - self.interrupt_start_time).nanoseconds > 20 * 1e9  # 20 seconds
+    #     #)
+
+    #     if finished_visiting_ring or in_ring_proximity:
+    #         self.cmdr.cancelTask()
+    #         self.speak(f"This is a {self.ring_color} ring")
+    #         self.ring_color = None
+    #         self.visit_ring_position = None
+
+    #         self.get_logger().info("✅ Reached or finished ring. Canceling goal and resuming inspection.")
+    #         return True
+    #     return False
 
 
     def is_visible(self, robot_pose, target, normal, fov_deg=90, min_angle_deg=45):
@@ -842,25 +859,43 @@ class InspectionNavigator(Node):
 
         self.pub_visited.publish(ma)
 
-    def publish_ring_marker(self, position):
+
+    def publish_ring_marker(self, position, color):
         marker = Marker()
         marker.header.frame_id = "map"
         marker.header.stamp = self.get_clock().now().to_msg()
         marker.ns = "rings"
         marker.id = int(position[0] * 1000) + int(position[1] * 1000)
-        marker.type = Marker.SPHERE
+        marker.type = Marker.LINE_STRIP
         marker.action = Marker.ADD
-        marker.pose.position.x = position[0]
-        marker.pose.position.y = position[1]
+        marker.pose.position.x = 0.0
+        marker.pose.position.y = 0.0
         marker.pose.position.z = 0.0
-        marker.scale.x = 0.15
-        marker.scale.y = 0.15
-        marker.scale.z = 0.05
-        marker.color.r = 1.0
-        marker.color.g = 1.0
-        marker.color.b = 0.0
-        marker.color.a = 1.0
+        marker.scale.x = 0.05  # ring thickness
+
+        # Color mapping
+        color_map = {
+            "black": (0.05, 0.05, 0.05, 1.0),
+            "red":   (1.0, 0.1, 0.1, 1.0),
+            "blue":  (0.2, 0.5, 1.0, 1.0),
+            "green": (0.2, 1.0, 0.3, 1.0)
+        }
+        color_rgba = color_map.get(color.lower(), (1.0, 1.0, 0.0, 1.0))  # yellow fallback
+        marker.color.r, marker.color.g, marker.color.b, marker.color.a = color_rgba
+
+        # Circle points for the ring
+        ring_radius = 0.09
+        num_points = 30
+        for i in range(num_points + 1):  # +1 to close the loop
+            angle = 2 * math.pi * i / num_points
+            pt = Point()
+            pt.x = position[0] + ring_radius * math.cos(angle)
+            pt.y = position[1] + ring_radius * math.sin(angle)
+            pt.z = position[2] if len(position) > 2 else 0.0
+            marker.points.append(pt)
+
         self.pub_ring_marker.publish(MarkerArray(markers=[marker]))
+
 
     def publish_bird_marker(self, position, class_name=""):
         marker = Marker()
@@ -876,12 +911,13 @@ class InspectionNavigator(Node):
         marker.scale.x = 0.15
         marker.scale.y = 0.15
         marker.scale.z = 0.05
-        marker.color.r = 1.0
-        marker.color.g = 0.0
+        # Light blue/cyan
+        marker.color.r = 0.3
+        marker.color.g = 0.8
         marker.color.b = 1.0
         marker.color.a = 1.0
 
-        # Optional: add label marker
+        # Label marker (red text)
         label = Marker()
         label.header.frame_id = "map"
         label.header.stamp = marker.header.stamp
@@ -889,21 +925,30 @@ class InspectionNavigator(Node):
         label.id = marker.id + 1000000
         label.type = Marker.TEXT_VIEW_FACING
         label.action = Marker.ADD
-        label.pose.position.x = position[0]
+        label.pose.position.x = position[0] + 0.15
         label.pose.position.y = position[1]
         label.pose.position.z = 0.2
         label.scale.z = 0.12  # text height
+        # Red text
         label.color.r = 1.0
-        label.color.g = 1.0
-        label.color.b = 1.0
+        label.color.g = 0.1
+        label.color.b = 0.1
         label.color.a = 1.0
         label.text = class_name
 
         self.pub_bird_marker.publish(MarkerArray(markers=[marker, label]))
 
 
-    def publish_pushed_face_marker(self, position, normal=None):
-        # Red dot for the face position
+
+    def publish_pushed_face_marker(self, position, normal=None, gender=None):
+        if gender == "man":
+            color_r, color_g, color_b, color_a = 0.1, 0.1, 0.8, 1.0  # dark blue
+        elif gender == "woman":
+            color_r, color_g, color_b, color_a = 1.0, 0.2, 0.8, 1.0  # pink
+        else:
+            color_r, color_g, color_b, color_a = 0.8, 0.8, 0.8, 1.0  # gray for unknown
+
+        # Red dot for the face position (now gender-based)
         m = Marker()
         m.header.frame_id = "map"
         m.header.stamp = self.get_clock().now().to_msg()
@@ -917,10 +962,10 @@ class InspectionNavigator(Node):
         m.scale.x = 0.15
         m.scale.y = 0.15
         m.scale.z = 0.05
-        m.color.r = 1.0
-        m.color.g = 0.0
-        m.color.b = 0.0
-        m.color.a = 1.0
+        m.color.r = color_r
+        m.color.g = color_g
+        m.color.b = color_b
+        m.color.a = color_a
         self.pushed_face_pub.publish(m)
 
         # Optional arrow for the normal vector
@@ -935,10 +980,10 @@ class InspectionNavigator(Node):
             arrow.scale.x = 0.05  # shaft diameter
             arrow.scale.y = 0.1   # head diameter
             arrow.scale.z = 0.1   # head length
-            arrow.color.r = 0.0
-            arrow.color.g = 1.0
-            arrow.color.b = 0.0
-            arrow.color.a = 1.0
+            arrow.color.r = color_r
+            arrow.color.g = color_g
+            arrow.color.b = color_b
+            arrow.color.a = color_a
 
             start = position
             end = (
@@ -950,6 +995,7 @@ class InspectionNavigator(Node):
             arrow.points.append(self.make_point(end))
 
             self.pushed_face_pub.publish(arrow)
+
 
     def make_point(self, pos):
         pt = PointStamped().point

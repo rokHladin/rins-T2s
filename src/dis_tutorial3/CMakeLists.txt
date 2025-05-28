@@ -36,6 +36,11 @@ install(DIRECTORY
   DESTINATION share/${PROJECT_NAME}/
 )
 
+install(
+  DIRECTORY T2s_custom_modules/
+  DESTINATION lib/${PROJECT_NAME}/T2s_custom_modules
+)
+
 install(PROGRAMS
   scripts/T2s_scripts/navigator.py
   scripts/T2s_scripts/face_detector.py

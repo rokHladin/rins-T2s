@@ -101,12 +101,25 @@ class RingDetector(Node):
         self.depth_sub = message_filters.Subscriber(self, Image, "/top_camera/rgb/preview/depth")
         self.pc_sub = message_filters.Subscriber(self, PointCloud2, "/top_camera/rgb/preview/depth/points")
 
+        self.sub_robot_state = self.create_subscription(
+            String,
+            '/robot_internal_state',
+            self.state_callback,
+            10
+        )
+        self.robot_state = None
+        self.state_override = False
+
+
         self.sync = message_filters.ApproximateTimeSynchronizer(
             [self.rgb_sub, self.depth_sub, self.pc_sub],
             queue_size=10,  # Increase if you expect delays
             slop=0.05       # 50 ms allowed diff, adjust as needed
         )
         self.sync.registerCallback(self.synced_callback)
+
+    def state_callback(self, msg):
+        self.robot_state = msg.data
 
     def camera_info_callback(self, msg):
         if self.intrinsics is not None:
@@ -236,7 +249,10 @@ class RingDetector(Node):
         return canny
 
     def synced_callback(self, img_msg, depth_msg, pc_msg):
-        # Process ONLY when all messages have approximately the same timestamp!
+        
+        if (self.robot_state is None or (self.robot_state != "INSPECTING_GOAL" and self.robot_state != "SELECTING_NEW_GOAL")) and self.state_override is False:
+            return
+
         try:
             cv_image = self.bridge.imgmsg_to_cv2(img_msg, "bgr8")
             depth_image = self.bridge.imgmsg_to_cv2(depth_msg, "32FC1")

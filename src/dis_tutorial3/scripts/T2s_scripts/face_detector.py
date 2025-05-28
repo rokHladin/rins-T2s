@@ -15,6 +15,7 @@ from geometry_msgs.msg import PointStamped, Vector3
 from std_msgs.msg import Header
 from cv_bridge import CvBridge
 from geometry_msgs.msg import Vector3Stamped
+from std_msgs.msg import String
 
 import tf2_ros
 import tf2_geometry_msgs
@@ -61,6 +62,15 @@ class FaceDetector(Node):
         self.sub_rgb = self.create_subscription(Image, "/oakd/rgb/preview/image_raw", self.rgb_callback, qos_profile_sensor_data)
         self.sub_pc = self.create_subscription(PointCloud2, "/oakd/rgb/preview/depth/points", self.pc_callback, qos_profile_sensor_data)
 
+        self.sub_robot_state = self.create_subscription(
+            String,
+            '/robot_internal_state',
+            self.state_callback,
+            10
+        )
+        self.robot_state = None
+        self.state_override = False
+
         self.face_pub = self.create_publisher(DetectedFace, "/detected_faces", 10)
 
         self.timer = self.create_timer(1.0, self.publish_new_faces)
@@ -71,8 +81,15 @@ class FaceDetector(Node):
 
         self.get_logger().info("✅ detect_people running. Waiting for faces...")
 
+    def state_callback(self, msg):
+        self.robot_state = msg.data
+
+
     def rgb_callback(self, msg):
         self.faces.clear()
+
+        if (self.robot_state is None or (self.robot_state != "INSPECTING_GOAL" and self.robot_state != "SELECTING_NEW_GOAL")) and self.state_override is False:
+            return
 
         try:
             img = self.bridge.imgmsg_to_cv2(msg, "bgr8")
@@ -303,6 +320,9 @@ class FaceDetector(Node):
                 best_gender = "unknown"
                 best_confidence = 0.0
             
+            if best_gender == "unknown":
+                continue
+            
             key = tuple(np.round(avg_pos, 2))
 
             if key in self.detected_faces_sent:
@@ -321,9 +341,8 @@ class FaceDetector(Node):
             msg.normal.y = float(avg_norm[1])
             msg.normal.z = float(avg_norm[2])
 
-            # Add gender information (you may need to add these fields to your DetectedFace message)
-            # For now, we'll log it and you can add to the message definition if needed
-            
+            msg.gender = best_gender
+
             self.face_pub.publish(msg)
             self.detected_faces_sent.add(key)
 
