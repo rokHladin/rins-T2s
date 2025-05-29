@@ -336,7 +336,7 @@ class InspectionNavigator(Node):
                 'confidence': msg.confidence,
                 'visited': False
             }
-            self.bird_queue.append(pos)
+            self.bird_queue.append((pos, class_name))
             self.publish_bird_marker(pos, class_name)
             self.speak(f"{class_name}")
             self.get_logger().info(f"🕊️ New bird found at {pos} ({class_name})")
