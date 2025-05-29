@@ -11,7 +11,6 @@ import pyaudio
 import traceback
 import time
 
-
 BIRD_SPECIES = [
     "Laysan Albatross", "Yellow headed Blackbird", "Indigo Bunting", "Pelagic Cormorant",
     "American Crow", "Yellow billed Cuckoo", "Purple Finch", "Vermilion Flycatcher",
@@ -20,6 +19,17 @@ BIRD_SPECIES = [
     "White necked Raven", "Great Grey Shrike", "House Sparrow", "Cape Glossy Starling",
     "Tree Swallow", "Common Tern", "Red headed Woodpecker"
 ]
+
+BIRD_SPECIES2_FILENAME = {
+    "Laysan Albatross": "laysan_albatross", "Yellow headed Blackbird": "yellow_headed_blackbird", "Indigo Bunting": "indigo_bunting", "Pelagic Cormorant": "pelagic_cormorant",
+    "American Crow": "american_crow", "Yellow billed Cuckoo": "yellow_billed_cuckoo", "Purple Finch": "purple_finch", "Vermilion Flycatcher": "vermilion_flycatcher",
+    "European Goldfinch": "european_goldfinch", "Eared Grebe": "eared_grebe", "California Gull": "california_gull", "Ruby throated Hummingbird": "ruby_throated_hummingbird",
+    "Blue Jay": "blue_jay", "Pied Kingfisher": "pied_kingfisher", "Baltimore Oriole": "baltimore_oriole", "White Pelican": "white_pelican", "Horned Puffin": "horned_puffin",
+    "White necked Raven": "white_necked_raven", "Great Grey Shrike": "great_grey_shrike", "House Sparrow": "house_sparrow", "Cape Glossy Starling": "cape_glossy_starling",
+    "Tree Swallow": "tree_swallow", "Common Tern": "common_tern", "Red headed Woodpecker": "red_headed_woodpecker"
+}
+
+
 BIRD_KEYWORDS = {
     "albatross": "Laysan Albatross", "blackbird": "Yellow headed Blackbird", "bunting": "Indigo Bunting",
     "cormorant": "Pelagic Cormorant", "crow": "American Crow", "cuckoo": "Yellow billed Cuckoo",
@@ -234,37 +244,45 @@ class SpeechGUI:
 
 
 class BirdDialogue:
-    def __init__(self, speech_system):
+    def __init__(self, speech_system: SpeechGUI, ring_queue: list, bird_queue: list):
         self.speech = speech_system
-        self.bird_locations = {
-            "Laysan Albatross": "in the north part of the park sitting on a blue ring",
-            "Yellow headed Blackbird": "in the east part of the park sitting on a yellow ring",
-            "Indigo Bunting": "in the center of the park sitting on a green ring",
-            "Pelagic Cormorant": "in the west part of the park sitting on a red ring",
-            "American Crow": "in the south part of the park sitting on a black ring",
-            "Yellow billed Cuckoo": "in the east part of the park sitting on a blue ring",
-            "Purple Finch": "in the center of the park sitting on a purple ring",
-            "Vermilion Flycatcher": "in the west part of the park sitting on a red ring",
-            "European Goldfinch": "in the north part of the park sitting on a yellow ring",
-            "Eared Grebe": "in the south part of the park sitting on a green ring",
-            "California Gull": "in the center of the park sitting on a white ring",
-            "Ruby throated Hummingbird": "in the east part of the park sitting on a red ring",
-            "Blue Jay": "in the north part of the park sitting on a blue ring",
-            "Pied Kingfisher": "in the west part of the park sitting on a green ring",
-            "Baltimore Oriole": "in the south part of the park sitting on an orange ring",
-            "White Pelican": "in the center of the park sitting on a white ring",
-            "Horned Puffin": "in the north part of the park sitting on a black ring",
-            "White necked Raven": "in the east part of the park sitting on a black ring",
-            "Great Grey Shrike": "in the west part of the park sitting on a gray ring",
-            "House Sparrow": "in the center of the park sitting on a brown ring",
-            "Cape Glossy Starling": "in the south part of the park sitting on a purple ring",
-            "Tree Swallow": "in the west part of the park sitting on a red ring",
-            "Common Tern": "in the east part of the park sitting on a white ring",
-            "Red headed Woodpecker": "in the north part of the park sitting on a red ring"
-        }
+
+        self.ring_queue = ring_queue
+        self.bird_locations = {bird[1]: bird[0] for bird in bird_queue}
 
     def get_bird_location(self, bird_name: str) -> str:
-        return self.bird_locations.get(bird_name, "somewhere in the park")
+        file_name = BIRD_SPECIES2_FILENAME.get(bird_name, "unknown")
+
+        if file_name not in self.bird_locations:
+            return "somewhere in the park"
+
+        bird_x = self.bird_locations[file_name][0]
+        bird_y = self.bird_locations[file_name][1]
+
+        ring_color = self.get_closest_ring_color(bird_x, bird_y)
+
+        return f"in the {self.get_region_name(bird_x, bird_y)} part of the park sitting close to the {ring_color} ring"
+    
+
+    def get_closest_ring_color(self, bird_x: float, bird_y: float) -> str:
+        min_distance = float('inf')
+        closest_ring_color = None
+        for ring in self.ring_queue:
+            ring_x = ring[0][0]
+            ring_y = ring[0][1]
+            distance = ((bird_x - ring_x) ** 2 + (bird_y - ring_y) ** 2) ** 0.5
+            if distance < min_distance:
+                min_distance = distance
+                closest_ring_color = ring[1]
+        return closest_ring_color
+
+    def get_region_name(self, x: float, y: float) -> str:
+        if y < -1:
+            return "West"
+        elif y >= -1 and y < 3.5:
+            return "Center"
+        else:
+            return "East"
 
     def conduct_dialogue(self, gender: Gender) -> Optional[str]:
         if gender == Gender.WOMAN:
@@ -389,7 +407,7 @@ def run_bird_dialogue_gui(gender: Gender, rings, birds, tts=True):
             gui.display("Invalid input. Please enter a number.")
 
     speech_system = SpeechGUI(gui, enable_tts=tts)
-    dialogue = BirdDialogue(speech_system)
+    dialogue = BirdDialogue(speech_system, rings, birds)
     gui.display(f"\n=== Starting dialogue with {gender.value} ===\n")
 
     def run_dialogue():
@@ -408,4 +426,62 @@ def run_bird_dialogue_gui(gender: Gender, rings, birds, tts=True):
     gui.start()
 
 if __name__ == "__main__":
-    run_bird_dialogue_gui(Gender.MAN, [], [])
+    run_bird_dialogue_gui(Gender.WOMAN, [
+    [
+      [
+        1.5312222035122776,
+        -0.010544224681286954
+      ],
+      "green"
+    ],
+    [
+      [
+        0.4605828877729664,
+        2.9195089385673385
+      ],
+      "blue"
+    ],
+    [
+      [
+        -3.20129693134099,
+        5.05783142045775
+      ],
+      "black"
+    ],
+    [
+      [
+        -3.865625090893959,
+        2.3676050720855857
+      ],
+      "red"
+    ]
+  ], [
+    [
+      [
+        1.590181588663573,
+        -0.09557064972333207
+      ],
+      "vermilion_flycatcher"
+    ],
+    [
+      [
+        0.31328273467670054,
+        2.9082087064620423
+      ],
+      "baltimore_oriole"
+    ],
+    [
+      [
+        -3.089599968849342,
+        5.079807535806343
+      ],
+      "blue_jay"
+    ],
+    [
+      [
+        -3.930048542368185,
+        2.3905216597116237
+      ],
+      "horned_puffin"
+    ]
+  ])

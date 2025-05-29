@@ -14,9 +14,10 @@ from collections import deque
 from geometry_msgs.msg import PointStamped
 from geometry_msgs.msg import Point
 import time
-
-
-
+import subprocess
+import json
+import importlib.resources
+import os
 from std_msgs.msg import ColorRGBA, String
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
@@ -27,6 +28,9 @@ from dis_tutorial3.msg import DetectedFace
 from dis_tutorial3.msg import DetectedRing
 from dis_tutorial3.msg import DetectedBird
 from T2s_custom_modules.dialogue import *
+import T2s_custom_modules.dialogue_start_process
+
+
 
 from geometry_msgs.msg import PoseWithCovarianceStamped
 
@@ -149,7 +153,6 @@ class InspectionNavigator(Node):
         
         #bridge navigation
         self.bridge_start_position = (0.00, -0.80, -np.pi/2)
-        self.bridge_end_position = (-1.75, -6.60, 0.0)
         self.red_parking_position = (1.24, -6.74, 0.0)
         self.latest_brige_position = None
         self.moving_to_brige_pose = None
@@ -158,10 +161,8 @@ class InspectionNavigator(Node):
         self.tts_engine = pyttsx3.init()
         self.cmdr = RobotCommander()
 
-        loop_update_delay_seconds = 0.5
+        loop_update_delay_seconds = 0.3
         self.timer = self.create_timer(loop_update_delay_seconds, self.robot_state_loop)
-
-        
 
     def publish_robot_state(self):
         msg = String()
@@ -180,8 +181,7 @@ class InspectionNavigator(Node):
 
     def arm_position_bridge_nav(self):
         msg = String()
-        angle_offset = math.radians(0)
-
+        angle_offset = math.radians(15)
         base_link_bend = 0.3
         bend_factor = 0.3
         yaw = 0.0
@@ -443,8 +443,10 @@ class InspectionNavigator(Node):
             if not robot_finished_initializing:
                 self.robot_state = RobotState.INITIALIZING
             else:
-                self.arm_position_ring_bird_search()
-                self.robot_state = RobotState.SELECTING_NEW_GOAL                
+                #self.arm_position_ring_bird_search()
+                #self.robot_state = RobotState.SELECTING_NEW_GOAL 
+                self.arm_position_bridge_nav()
+                self.robot_state = RobotState.MOVING_TO_BRIDGE               
 
         elif self.robot_state == RobotState.SELECTING_NEW_GOAL:
 
@@ -453,13 +455,10 @@ class InspectionNavigator(Node):
             if new_goal_selected:
                 self.robot_state = RobotState.INSPECTING_GOAL
 
-                #temporary debug state transition
-                if self.face_queue:
-                    self.robot_state = RobotState.SELECTING_PERSON
+                #if self.face_queue:
+                #    self.robot_state = RobotState.SELECTING_PERSON
 
             else:
-                #self.arm_position_bridge_nav()
-                #self.robot_state = RobotState.MOVING_TO_BRIDGE
                 self.robot_state = RobotState.SELECTING_PERSON
 
         elif self.robot_state == RobotState.INSPECTING_GOAL:
@@ -527,18 +526,10 @@ class InspectionNavigator(Node):
 
     def handle_robot_moving_to_parking(self):
         rx, ry, ryaw = self.robot_pose
-        tx, ty, tyaw = self.red_parking_position
 
-        dist_to_start = math.hypot(tx - rx, ty - ry)
-        yaw_error = self.normalize_angle_rad(tyaw - ryaw)
+        return True
 
-        dist_thresh_in_meters = 0.08
-        angle_thresh_in_radians = math.radians(5)
-
-        if dist_to_start < dist_thresh_in_meters and abs(yaw_error) < angle_thresh_in_radians:
-            return True
-
-        self.move_to_position(self.red_parking_position)
+        #self.move_to_position(self.red_parking_position)
         return False
     
     def move_to_position(self, bridge_pose):
@@ -565,11 +556,6 @@ class InspectionNavigator(Node):
         
     def handle_robot_bridge_navigation(self):
         rx, ry, ryaw = self.robot_pose
-        tx, ty, _ = self.bridge_end_position
-        dist_to_end = math.hypot(tx - rx, ty - ry)
-
-        if dist_to_end < 0.6:
-            return True
 
         done_with_bridge_move = self.cmdr.isTaskComplete()
 
@@ -686,19 +672,40 @@ class InspectionNavigator(Node):
 
     def handle_robot_visiting_face(self):
         got_to_face = self.cmdr.isTaskComplete()
-        
         if not got_to_face:
             return False
-        
+
         if self.current_face is None:
-            #failsafe
+            # failsafe
             return True
-        
-        gender = Gender.MAN if self.current_face[2] == "man" else Gender.WOMAN
+
+        gender = "MAN" if self.current_face[2] == "man" else "WOMAN"
         birds = list(self.bird_queue)
         rings = list(self.ring_queue)
 
-        run_bird_dialogue_gui(gender=gender, rings=rings, birds=birds)
+
+        dialogue_script_path = T2s_custom_modules.dialogue_start_process.__file__
+        pkg_dir = os.path.dirname(dialogue_script_path)
+        lib_dir = os.path.dirname(pkg_dir)
+        self.get_logger().info(f"Launching dialogue script at: {dialogue_script_path}")
+
+        env = os.environ.copy()
+        env["PYTHONPATH"] = lib_dir + ":" + env.get("PYTHONPATH", "")
+
+        # Run the dialogue GUI as a blocking subprocess
+        try:
+            subprocess.run(
+                [
+                    "python3", "-m", "T2s_custom_modules.dialogue_start_process",
+                    gender,
+                    json.dumps(rings),
+                    json.dumps(birds),
+                ],
+                env=env,
+                check=True,
+            )
+        except subprocess.CalledProcessError as e:
+            self.get_logger().error(f"Dialogue script failed: {e}")
 
         self.current_face = None
         return True

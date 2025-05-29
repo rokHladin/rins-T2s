@@ -73,9 +73,9 @@
       linear.x.has_jerk_limits: false
       # This is max if system is safety_override "full"
       # motion_control_node will bound this to 0.306 if safety enabled (as is by default)
-      linear.x.max_velocity: 0.46
-      linear.x.min_velocity: -0.46
-      linear.x.max_acceleration: 0.9
+      linear.x.max_velocity: 1.0
+      linear.x.min_velocity: -1.0
+      linear.x.max_acceleration: 0.5
       # Not using jerk limits yet
       # linear.x.max_jerk: 0.0
       # linear.x.min_jerk: 0.0
