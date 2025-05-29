@@ -247,32 +247,6 @@ class SpeechGUI:
 class BirdDialogue:
     def __init__(self, speech_system: SpeechGUI, ring_queue: list, bird_queue: list):
         self.speech = speech_system
-        self.bird_descriptions = {
-            "Laysan Albatross": "in the north part of the park sitting on a blue ring",
-            "Yellow headed Blackbird": "in the east part of the park sitting on a yellow ring",
-            "Indigo Bunting": "in the center of the park sitting on a green ring",
-            "Pelagic Cormorant": "in the west part of the park sitting on a red ring",
-            "American Crow": "in the south part of the park sitting on a black ring",
-            "Yellow billed Cuckoo": "in the east part of the park sitting on a blue ring",
-            "Purple Finch": "in the center of the park sitting on a purple ring",
-            "Vermilion Flycatcher": "in the west part of the park sitting on a red ring",
-            "European Goldfinch": "in the north part of the park sitting on a yellow ring",
-            "Eared Grebe": "in the south part of the park sitting on a green ring",
-            "California Gull": "in the center of the park sitting on a white ring",
-            "Ruby throated Hummingbird": "in the east part of the park sitting on a red ring",
-            "Blue Jay": "in the north part of the park sitting on a blue ring",
-            "Pied Kingfisher": "in the west part of the park sitting on a green ring",
-            "Baltimore Oriole": "in the south part of the park sitting on an orange ring",
-            "White Pelican": "in the center of the park sitting on a white ring",
-            "Horned Puffin": "in the north part of the park sitting on a black ring",
-            "White necked Raven": "in the east part of the park sitting on a black ring",
-            "Great Grey Shrike": "in the west part of the park sitting on a gray ring",
-            "House Sparrow": "in the center of the park sitting on a brown ring",
-            "Cape Glossy Starling": "in the south part of the park sitting on a purple ring",
-            "Tree Swallow": "in the west part of the park sitting on a red ring",
-            "Common Tern": "in the east part of the park sitting on a white ring",
-            "Red headed Woodpecker": "in the north part of the park sitting on a red ring"
-        }
 
         self.ring_queue = ring_queue
         self.bird_locations = {bird[1]: bird[0] for bird in bird_queue}
