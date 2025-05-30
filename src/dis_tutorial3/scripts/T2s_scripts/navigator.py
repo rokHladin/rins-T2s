@@ -30,7 +30,7 @@ from dis_tutorial3.msg import DetectedBird
 from T2s_custom_modules.dialogue import *
 import T2s_custom_modules.dialogue_start_process
 
-
+from dis_tutorial3.msg import BridgePose
 
 from geometry_msgs.msg import PoseWithCovarianceStamped
 
@@ -106,7 +106,7 @@ class InspectionNavigator(Node):
         )
 
         self.bridge_pose_sub = self.create_subscription(
-            PoseStamped,
+            BridgePose,
             "/bridge_pose_map",
             self.bridge_pose_callback,
             10 
@@ -408,29 +408,20 @@ class InspectionNavigator(Node):
         self.tts_engine.runAndWait()
         time.sleep(0.2) 
 
-    def bridge_pose_callback(self, msg: PoseStamped):
+    def bridge_pose_callback(self, msg: BridgePose):
         x = msg.pose.position.x
         y = msg.pose.position.y
         relative_yaw = self.quaternion_to_yaw(msg.pose.orientation)
+        is_final_position = msg.is_final_position  # <--- The boolean flag
 
         if self.robot_pose is None:
             self.get_logger().warn("⚠️ Received bridge pose but AMCL pose is not yet available.")
             return
 
-        # Add robot's yaw (map frame) to relative yaw (robot frame)
         _, _, robot_yaw = self.robot_pose
         global_yaw = self.normalize_angle_rad(robot_yaw - relative_yaw)
 
-        self.latest_brige_position = (x, y, global_yaw)
-
-        # ANSI escape code for cyan
-        # CYAN = '\033[96m'
-        # RESET = '\033[0m'
-        # self.get_logger().info(f"{CYAN}📡 Received new bridge pose → x: {x:.2f}, y: {y:.2f}, "
-        #     f"RELATIVE DIR: {math.degrees(relative_yaw):.1f}°, "
-        #     f"ROBOT DIR: {math.degrees(robot_yaw):.1f}°, "
-        #     f"→ map yaw: {math.degrees(global_yaw):.1f}°{RESET}"
-        # )
+        self.latest_brige_position = (x, y, global_yaw, is_final_position)
 
     def robot_state_loop(self):
         self.get_logger().info(f"Current Robot State - {self.robot_state}")
@@ -443,10 +434,10 @@ class InspectionNavigator(Node):
             if not robot_finished_initializing:
                 self.robot_state = RobotState.INITIALIZING
             else:
-                #self.arm_position_ring_bird_search()
-                #self.robot_state = RobotState.SELECTING_NEW_GOAL 
-                self.arm_position_bridge_nav()
-                self.robot_state = RobotState.MOVING_TO_BRIDGE               
+                self.arm_position_ring_bird_search()
+                self.robot_state = RobotState.SELECTING_NEW_GOAL 
+                #self.arm_position_bridge_nav()
+                #self.robot_state = RobotState.MOVING_TO_BRIDGE               
 
         elif self.robot_state == RobotState.SELECTING_NEW_GOAL:
 
@@ -561,7 +552,7 @@ class InspectionNavigator(Node):
 
         # Aligning yaw if we reached the previous goal
         if done_with_bridge_move and self.latest_brige_position is not None and self.moving_to_brige_pose is not None:
-            _, _, goal_yaw = self.moving_to_brige_pose
+            mtx, mty, goal_yaw, is_final = self.moving_to_brige_pose
             yaw_error = self.normalize_angle_rad(goal_yaw - ryaw)
 
             #RED = '\033[91m'
@@ -576,13 +567,20 @@ class InspectionNavigator(Node):
                 #self.get_logger().warning(
                 #    f"{CYAN}Yaw misaligned (current: {math.degrees(ryaw):.1f}°, target: {math.degrees(goal_yaw):.1f}°, error: {math.degrees(yaw_error):.1f}°) → retrying same pose{RESET}"
                 #)
-                self.move_to_position(self.moving_to_brige_pose)
+                pos = (mtx, mty, goal_yaw)
+                self.move_to_position(pos)
                 return False
+            #done
+            if is_final:
+                return True
+
 
             # Aligned: go into "waiting for new bridge pose" mode
             self.get_logger().info("Yaw aligned. Waiting for new bridge position...")
             self.moving_to_brige_pose = None
             self.last_used_bridge_pose = self.latest_brige_position  # Mark it as used
+
+
 
         # New bridge target received and ready to move
         if done_with_bridge_move and self.latest_brige_position is not None and self.moving_to_brige_pose is None:
@@ -591,7 +589,10 @@ class InspectionNavigator(Node):
                 #self.get_logger().warning(
                 #    f"Robot with YAW - {math.degrees(ryaw):.1f}° - Going To New Bridge Pos {self.latest_brige_position}"
                 #)
-                self.move_to_position(self.latest_brige_position)
+                lbx, lby, lbyaw, lbfinal = self.latest_brige_position
+                pos = (lbx, lby, lbyaw)
+
+                self.move_to_position(pos)
                 self.moving_to_brige_pose = self.latest_brige_position
             else:
                 #self.get_logger().info("Waiting for new bridge position...")

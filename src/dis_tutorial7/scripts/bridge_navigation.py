@@ -16,6 +16,8 @@ from geometry_msgs.msg import PoseStamped
 from geometry_msgs.msg import PointStamped
 from tf_transformations import quaternion_from_euler
 
+from dis_tutorial3.msg import BridgePose
+
 import tf2_ros
 import tf2_geometry_msgs
 
@@ -36,7 +38,7 @@ class BridgeNavigator(Node):
         self.sub_arm_depth = self.create_subscription(Image, "/top_camera/rgb/preview/depth", self.arm_depth_callback, qos_profile_sensor_data)
         self.sub_arm_pointcloud = self.create_subscription(PointCloud2, "/top_camera/rgb/preview/depth/points", self.pc_callback, qos_profile_sensor_data)
 
-        self.pub_bridge_pose = self.create_publisher(PoseStamped, "/bridge_pose_map", 10)
+        self.pub_bridge_pose = self.create_publisher(BridgePose, "/bridge_pose_map", 10)
         self.latest_pointcloud = None
 
         self.sub_robot_state = self.create_subscription(
@@ -46,10 +48,7 @@ class BridgeNavigator(Node):
             10
         )
         self.robot_state = None
-        self.state_override = True
 
-        self.arm_command_pub = self.create_publisher(String, "/arm_command", 10)
-        self.initial_pose_timer = self.create_timer(3, self.publish_initial_command)
 
         self.display_dict = {
             "Original (Arm RGB)": np.zeros((240, 320, 3), dtype=np.uint8),
@@ -61,10 +60,15 @@ class BridgeNavigator(Node):
             "Red X Detection": np.zeros((240, 320, 3), dtype=np.uint8)
         }
 
-        # Precompute reference histogram for "red"
         self.red_hist_ref = self.generate_wrapped_gaussian(center=0, std_dev=8)
 
         self.get_logger().info("Bridge mover started")
+
+        #development variables - disable on final version
+        self.state_override = False
+        #self.arm_command_pub = self.create_publisher(String, "/arm_command", 10)
+        #self.initial_pose_timer = self.create_timer(3, self.publish_initial_command)
+
 
     # --- Histogram Helpers as Class Methods ---
     def generate_wrapped_gaussian(self, center, std_dev=8, normalize=True):
@@ -227,7 +231,18 @@ class BridgeNavigator(Node):
         except Exception:
             return
 
-    def transform_and_publish_point(self, point_in_image, direction_normal):
+    def publish_map_point(self, map_point, orientation, is_final_pose):
+        pose_msg = BridgePose()
+        pose_msg.header = map_point.header
+        pose_msg.pose.position = map_point.point
+        pose_msg.pose.orientation.x = orientation[0]
+        pose_msg.pose.orientation.y = orientation[1]
+        pose_msg.pose.orientation.z = orientation[2]
+        pose_msg.pose.orientation.w = orientation[3]
+        pose_msg.is_final_position = is_final_pose
+        self.pub_bridge_pose.publish(pose_msg)
+
+    def transform_image_point_to_map(self, point_in_image, direction_normal):
         if self.latest_pointcloud is None:
             return
         try:
@@ -252,45 +267,9 @@ class BridgeNavigator(Node):
             offset = math.radians(90)
             yaw = math.atan2(-direction_normal[1], -direction_normal[0]) + offset
             qx, qy, qz, qw = quaternion_from_euler(0.0, 0.0, yaw)
-            pose_msg = PoseStamped()
-            pose_msg.header = map_point.header
-            pose_msg.pose.position = map_point.point
-            pose_msg.pose.orientation.x = qx
-            pose_msg.pose.orientation.y = qy
-            pose_msg.pose.orientation.z = qz
-            pose_msg.pose.orientation.w = qw
-            self.pub_bridge_pose.publish(pose_msg)
-        except Exception as e:
-            self.get_logger().warn(f"Exception during bridge detection: {e}")
+            orientation = (qx, qy, qz, qw)
 
-
-    def transform_point(self, point_in_image, direction_normal):
-        if self.latest_pointcloud is None:
-            return
-        try:
-            pc_array = pc2.read_points_numpy(self.latest_pointcloud, field_names=("x", "y", "z"))
-            pc_array = pc_array.reshape((self.latest_pointcloud.height, self.latest_pointcloud.width, 3))
-            pt = pc_array[point_in_image[1], point_in_image[0]]
-            if not np.all(np.isfinite(pt)) or np.linalg.norm(pt) < 0.05:
-                return
-            camera_point = PointStamped()
-            camera_point.header.stamp = self.get_clock().now().to_msg()
-            camera_point.header.frame_id = self.latest_pointcloud.header.frame_id
-            camera_point.point.x = float(pt[0])
-            camera_point.point.y = float(pt[1])
-            camera_point.point.z = float(pt[2])
-            transform = self.tf_buffer.lookup_transform(
-                "map",
-                camera_point.header.frame_id,
-                rclpy.time.Time(),
-                timeout=rclpy.duration.Duration(seconds=0.5)
-            )
-            map_point = tf2_geometry_msgs.do_transform_point(camera_point, transform)
-            offset = math.radians(90)
-            yaw = math.atan2(-direction_normal[1], -direction_normal[0]) + offset
-            qx, qy, qz, qw = quaternion_from_euler(0.0, 0.0, yaw)
-
-            return map_point, yaw
+            return map_point, orientation
         except Exception as e:
             self.get_logger().warn(f"Exception during bridge detection: {e}")
             return None, None
@@ -326,8 +305,12 @@ class BridgeNavigator(Node):
                 cv2.putText(forward_image_viz, "Bridge End Detected", (center_point[0] - 15, center_point[1] + 80), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
                 self.display_dict["Fitted Guardrails"] = forward_image_viz
                 self.display_image_grid(self.display_dict)
-                self.transform_and_publish_point(center_point, direction_normal_2d)
-                self.display_image_grid(self.display_dict)
+
+                map_point, orientation = self.transform_image_point_to_map(center_point, direction_normal_2d)
+                if map_point is None or orientation is None:
+                    return
+
+                self.publish_map_point(map_point, orientation, is_final_pose=False)
                 return
 
             # --- Red X Detection and Visualization ---
@@ -335,13 +318,15 @@ class BridgeNavigator(Node):
             self.display_dict["Red X Detection"] = x_viz
             self.display_dict["Red X Otsu"] = otsu_viz_x
             if red_x_found:
+                self.display_image_grid(self.display_dict)
 
                 direction_normal_2d = np.array([0, 1], dtype=np.float32)
-                point3d, yaw = self.transform_point(red_x_center, direction_normal_2d)
-                self.display_image_grid(self.display_dict)
+                map_point, orientation = self.transform_image_point_to_map(red_x_center, direction_normal_2d)
+                if map_point is None or orientation is None:
+                    return
+
+                self.publish_map_point(map_point, orientation, is_final_pose=True)
                 return
-
-
 
             edges = cv2.Canny(closed, 50, 150)
             height, width = closed.shape
@@ -442,7 +427,12 @@ class BridgeNavigator(Node):
                     cv2.arrowedLine(line_vis, tuple(midpoint), tuple(direction), (255, 255, 0), 3, tipLength=0.2)
                     cv2.circle(line_vis, tuple(midpoint), 5, (255, 0, 255), -1)
                     if idx == len(valid_pairs) - 1:
-                        self.transform_and_publish_point(midpoint, direction_normal_2d)
+
+                        map_point, orientation = self.transform_image_point_to_map(midpoint, direction_normal_2d)
+                        if map_point is None or orientation is None:
+                            return
+
+                        self.publish_map_point(map_point, orientation, is_final_pose=False)
 
             self.display_dict["Fitted Guardrails"] = line_vis
             self.display_image_grid(self.display_dict)
