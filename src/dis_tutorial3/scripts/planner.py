@@ -35,7 +35,10 @@ class Planner(Node):
         self.target_offset = 0.2
         self.spacing = 0.3
         self.max_line_length_m = 2.0
-        self.min_clearance_m = 0.2
+        self.min_clearance_m = 0.5
+
+        self.max_push_m = 1.0    # maximum distance to push away from wall
+        self.push_step_m = 0.05  # step size when pushing
 
     def map_callback(self, msg):
         if self.map_received:
@@ -106,13 +109,79 @@ class Planner(Node):
         region = grid[y - buf:y + buf + 1, x - buf:x + buf + 1]
         return np.all(region == 1.0)
 
-    def has_clearance(self, wx, wy, origin):
+    def has_clearance(self, wx, wy, origin, min_clearance=None):
         if self.dist_transform is None:
             return True
         px, py = self.world_to_pixel(wx, wy, origin, self.resolution)
         if 0 <= px < self.dist_transform.shape[1] and 0 <= py < self.dist_transform.shape[0]:
-            return self.dist_transform[py, px] * self.resolution >= self.min_clearance_m
+            clearance = self.dist_transform[py, px] * self.resolution
+            if min_clearance is None:
+                min_clearance = self.min_clearance_m
+            return clearance >= min_clearance
         return False
+
+    def push_away_from_closest_wall(self, wx, wy, origin, occ, res, min_clearance, max_push=None, step=None):
+        """
+        Move point (wx, wy) directly away from the closest wall pixel until min_clearance is reached or max_push is exceeded.
+        Returns (new_wx, new_wy) or None if not found.
+        """
+        if max_push is None:
+            max_push = self.max_push_m
+        if step is None:
+            step = self.push_step_m
+
+        candidate = np.array([wx, wy])
+        total_push = 0.0
+        for _ in range(int(max_push // step)):
+            if self.has_clearance(candidate[0], candidate[1], origin, min_clearance):
+                return candidate[0], candidate[1]
+            wall_px = self.closest_wall_pixel(candidate[0], candidate[1], origin, res, occ)
+            if wall_px is None:
+                return candidate[0], candidate[1]
+            # Convert wall pixel to world coordinates
+            wall_w = self.pixel_to_world(wall_px[0], wall_px[1], res, origin, self.map_img.shape[0])
+            away_vec = candidate - wall_w
+            norm = np.linalg.norm(away_vec)
+            if norm < 1e-3:
+                # If we're right on top of a wall pixel, nudge randomly
+                direction = np.array([1.0, 0.0])
+            else:
+                direction = away_vec / norm
+            candidate = candidate + direction * step
+            total_push += step
+            if total_push > max_push:
+                break
+        return None
+
+
+    def closest_wall_pixel(self, wx, wy, origin, res, occ):
+        # Convert world to pixel
+        px, py = self.world_to_pixel(wx, wy, origin, res)
+        wall_pixels = np.argwhere(occ == 0.0)
+        if wall_pixels.shape[0] == 0:
+            return None
+        # Compute squared distances for efficiency
+        dists = (wall_pixels[:, 1] - px) ** 2 + (wall_pixels[:, 0] - py) ** 2
+        min_idx = np.argmin(dists)
+        closest = wall_pixels[min_idx]
+        # Return pixel coordinates (x, y)
+        return int(closest[1]), int(closest[0])
+
+
+    def push_away_from_wall(self, wx, wy, norm_vec, origin, min_clearance, max_push=None, step=None):
+        """
+        Move point (wx, wy) along norm_vec until min_clearance is reached or max_push is exceeded.
+        Returns (new_wx, new_wy) or None if not found.
+        """
+        if max_push is None:
+            max_push = self.max_push_m
+        if step is None:
+            step = self.push_step_m
+        for d in np.arange(0, max_push + step, step):
+            candidate = np.array([wx, wy]) + norm_vec * d
+            if self.has_clearance(candidate[0], candidate[1], origin, min_clearance):
+                return candidate[0], candidate[1]
+        return None
 
     def generate_camera_targets(self, lines, grid, res, origin, height, start_target_id=1000):
         spacing_px = self.spacing / res
@@ -140,6 +209,13 @@ class Planner(Node):
                     offset = interp + direction * target_offset_px * norm_vec
                     if self.is_valid(offset[0], offset[1], grid):
                         wp = self.pixel_to_world(offset[0], offset[1], res, origin, height)
+                        # Optionally push targets away too:
+                        # if not self.has_clearance(wp[0], wp[1], origin):
+                        #     pushed = self.push_away_from_wall(wp[0], wp[1], norm_vec * direction, origin, self.min_clearance_m)
+                        #     if pushed is not None:
+                        #         wp = np.array(pushed)
+                        #     else:
+                        #         continue
                         targets.append((wp[0], wp[1], norm_vec[0] * direction, norm_vec[1] * direction, target_id))
                         target_id += 1
 
@@ -148,8 +224,17 @@ class Planner(Node):
 
                 center_offset = mid_pix + direction * cam_offset_px * norm_vec
                 wp = self.pixel_to_world(center_offset[0], center_offset[1], res, origin, height)
-                if self.is_valid(center_offset[0], center_offset[1], grid) and self.has_clearance(wp[0], wp[1], origin):
-                    yaw = math.atan2(mid_world[1] - wp[1], mid_world[0] - wp[0])
+                yaw = math.atan2(mid_world[1] - wp[1], mid_world[0] - wp[0])
+
+                if self.is_valid(center_offset[0], center_offset[1], grid):
+                    # If not enough clearance, push away from wall
+                    if not self.has_clearance(wp[0], wp[1], origin):
+                        pushed = self.push_away_from_closest_wall(wp[0], wp[1], origin, grid, res, self.min_clearance_m)
+
+                        if pushed is not None:
+                            wp = np.array(pushed)
+                        else:
+                            continue  # Could not push far enough from wall
                     poses.append({'pose': (wp[0], wp[1], yaw), 'targets': targets})
 
         return poses, target_id
@@ -193,9 +278,6 @@ class Planner(Node):
             marker.color.b = 1.0
             marker.color.a = 1.0
             markers.markers.append(marker)
-
-
-
 
         for entry in cam_targets:
             x, y, yaw = entry['pose']
