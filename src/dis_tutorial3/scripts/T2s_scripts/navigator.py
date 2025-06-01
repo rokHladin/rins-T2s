@@ -326,9 +326,10 @@ class InspectionNavigator(Node):
 
         if existing_pos:
             # Update classification and confidence
-            if not self.bird_data[existing_pos]['visited']:
-                self.bird_data[existing_pos]['class_name'] = class_name
-                self.bird_data[existing_pos]['confidence'] = msg.confidence
+            #if not self.bird_data[existing_pos]['visited']:
+            #    self.bird_data[existing_pos]['class_name'] = class_name
+            #    self.bird_data[existing_pos]['confidence'] = msg.confidence
+            self.get_logger().warn("already seen...")
         else:
             # Add new entry
             self.bird_data[pos] = {

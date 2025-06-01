@@ -1,5 +1,8 @@
 build
 install
 log
-
-train_bird_classifier/filtered_data
+src/dis_tutorial7/urdf/create/create3.urdf.xacro
+train_bird_classifier/*
+!train_bird_classifier/add_meshes.py
+!train_bird_classifier/prepare_subset.py
+!train_bird_classifier/train_classifier.py

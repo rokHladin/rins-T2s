@@ -25,7 +25,7 @@ class BirdDetector(Node):
         super().__init__('detect_birds')
 
         self.yolo_model = YOLO("model/bird_yolov8n.pt")
-        self.resnet_model_path = "model/bird_species_resnet18.pt"
+        self.resnet_model_path = "model/bird_species_resnet18_added.pt"
         self.data_dir = "train_bird_classifier/filtered_data"
 
         self.bridge = CvBridge()
@@ -43,7 +43,7 @@ class BirdDetector(Node):
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.resnet = models.resnet18(weights=None)
-        self.resnet.fc = torch.nn.Linear(self.resnet.fc.in_features, 24)
+        self.resnet.fc = torch.nn.Linear(self.resnet.fc.in_features, 22)
         self.resnet.load_state_dict(torch.load(self.resnet_model_path, map_location=self.device))
         self.resnet.to(self.device).eval()
 
@@ -63,7 +63,7 @@ class BirdDetector(Node):
 
         self.groups = []
         self.group_threshold = 0.5
-        self.min_detections = 3
+        self.min_detections = 50
 
         self.get_logger().info("🦜 Bird detection node ready")
 
@@ -75,8 +75,8 @@ class BirdDetector(Node):
 
     def image_callback(self, msg):
 
-        if (self.robot_state is None or (self.robot_state != "INSPECTING_GOAL" and self.robot_state != "SELECTING_NEW_GOAL")) and self.state_override is False:
-            return
+        #if (self.robot_state is None or (self.robot_state != "INSPECTING_GOAL" and self.robot_state != "SELECTING_NEW_GOAL")) and self.state_override is False:
+        #    return
 
         if self.latest_pointcloud is None:
             self.get_logger().warn("No point cloud received yet.")
@@ -106,9 +106,9 @@ class BirdDetector(Node):
                 class_confidence, class_idx = torch.max(probabilities, dim=1)
                 class_confidence = class_confidence.item()
 
-                #if class_confidence < 0.4:  # Adjust threshold as desired
-                #    self.get_logger().info(f"Skipped classification (low confidence: {class_confidence:.2f})")
-                #    continue
+                if class_confidence < 0.9:  # Adjust threshold as desired
+                    self.get_logger().info(f"Skipped classification (low confidence: {class_confidence:.2f})")
+                    continue
 
                 class_name = self.class_names[class_idx.item()]
             
