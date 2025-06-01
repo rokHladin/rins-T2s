@@ -7,6 +7,7 @@ from geometry_msgs.msg import PointStamped, Point
 from std_msgs.msg import Header
 from cv_bridge import CvBridge
 from ultralytics import YOLO
+from collections import defaultdict
 import torch
 from torchvision import transforms, models
 import cv2
@@ -25,7 +26,7 @@ class BirdDetector(Node):
         super().__init__('detect_birds')
 
         self.yolo_model = YOLO("model/bird_yolov8n.pt")
-        self.resnet_model_path = "model/bird_species_resnet18_added.pt"
+        self.resnet_model_path = "model/bird_species_resnet18.pt"
         self.data_dir = "train_bird_classifier/filtered_data"
 
         self.bridge = CvBridge()
@@ -43,7 +44,7 @@ class BirdDetector(Node):
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.resnet = models.resnet18(weights=None)
-        self.resnet.fc = torch.nn.Linear(self.resnet.fc.in_features, 22)
+        self.resnet.fc = torch.nn.Linear(self.resnet.fc.in_features, 24)
         self.resnet.load_state_dict(torch.load(self.resnet_model_path, map_location=self.device))
         self.resnet.to(self.device).eval()
 
@@ -106,8 +107,8 @@ class BirdDetector(Node):
                 class_confidence, class_idx = torch.max(probabilities, dim=1)
                 class_confidence = class_confidence.item()
 
-                if class_confidence < 0.9:  # Adjust threshold as desired
-                    self.get_logger().info(f"Skipped classification (low confidence: {class_confidence:.2f})")
+                if class_confidence < 0.3:  # Adjust threshold as desired
+                    self.get_logger().info(f"Skipped classification (low confidence: {class_confidence:.2f}, {self.class_names[class_idx.item()]})")
                     continue
 
                 class_name = self.class_names[class_idx.item()]
@@ -179,24 +180,18 @@ class BirdDetector(Node):
             if len(group['positions']) >= self.min_detections:
                 avg_pos = np.mean(group['positions'], axis=0)
 
-                # Aggregate classification confidences
-                class_scores = {}
-                total_weight = 0.0
-
+                # Collect confidences for each class
+                class_confidences = defaultdict(list)
                 for cls, conf in group['classifications']:
-                    if cls not in class_scores:
-                        class_scores[cls] = 0.0
-                    class_scores[cls] += conf
-                    total_weight += conf
+                    class_confidences[cls].append(conf)
 
-                if total_weight == 0:
-                    continue
+                # Compute mean confidence for each class
+                mean_scores = {cls: np.mean(confs) for cls, confs in class_confidences.items()}
 
-                # Normalize and choose best class
-                normalized_scores = {cls: score / total_weight for cls, score in class_scores.items()}
-                final_class = max(normalized_scores.items(), key=lambda x: x[1])[0]
-                final_confidence = normalized_scores[final_class]
-
+                # Pick the class with the largest mean confidence
+                final_class = max(mean_scores.items(), key=lambda x: x[1])[0]
+                final_confidence = mean_scores[final_class]
+                
                 msg = DetectedBird()
                 msg.header.stamp = self.get_clock().now().to_msg()
                 msg.header.frame_id = 'map'
