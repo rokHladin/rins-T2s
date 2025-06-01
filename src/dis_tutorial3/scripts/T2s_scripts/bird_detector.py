@@ -26,7 +26,7 @@ class BirdDetector(Node):
         super().__init__('detect_birds')
 
         self.yolo_model = YOLO("model/bird_yolov8n.pt")
-        self.resnet_model_path = "model/bird_species_resnet18.pt"
+        self.resnet_model_path = "model/bird_species_resnet18_reduced.pt"
         self.data_dir = "train_bird_classifier/filtered_data"
 
         self.bridge = CvBridge()
