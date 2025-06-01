@@ -424,9 +424,11 @@ class InspectionNavigator(Node):
         self.latest_brige_position = (x, y, global_yaw, is_final_position)
 
     def robot_state_loop(self):
-        self.get_logger().info(f"Current Robot State - {self.robot_state}")
+        #self.get_logger().info(f"Current Robot State - {self.robot_state}")
         #current_time = self.get_clock().now()
         #this function should only include handler calls and state transitions for clarity
+
+        self.get_logger().info(f"Current birds: {self.bird_data}")
 
         if self.robot_state == RobotState.INITIALIZING:
             robot_finished_initializing = self.handle_robot_initializing()
