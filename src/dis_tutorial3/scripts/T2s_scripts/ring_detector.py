@@ -250,7 +250,7 @@ class RingDetector(Node):
 
     def synced_callback(self, img_msg, depth_msg, pc_msg):
         
-        if (self.robot_state is None or (self.robot_state != "INSPECTING_GOAL" and self.robot_state != "SELECTING_NEW_GOAL")) and self.state_override is False:
+        if (self.robot_state is None or (self.robot_state != "ARRIVED_AT_GOAL" and self.robot_state != "MOVING_CLOSER_TO_BIRD")) and self.state_override is False:
             return
 
         try:
@@ -402,9 +402,9 @@ class RingDetector(Node):
                     if valid_points.shape[0] < 3:
                         self.get_logger().warn("Not enough valid 3D points for averaging.")
                         return
-                    depth_from_pc = np.median(points_3d[:, 2])
-                    self.get_logger().info(f"{RED} DEPTH BUFFER MEASUREMENT {median_depth:.4}{RESET}")
-                    self.get_logger().info(f"{RED} PC BUFFER MEASUREMENT - {depth_from_pc:.4}{RESET}")
+                    #depth_from_pc = np.median(points_3d[:, 2])
+                    #self.get_logger().info(f"{RED} DEPTH BUFFER MEASUREMENT {median_depth:.4}{RESET}")
+                    #self.get_logger().info(f"{RED} PC BUFFER MEASUREMENT - {depth_from_pc:.4}{RESET}")
                     median3d = np.median(valid_points, axis=0)
                     stamped = PointStamped()
                     stamped.header.stamp = self.get_clock().now().to_msg()

@@ -42,12 +42,14 @@ from enum import Enum, auto
 class RobotState(Enum):
     INITIALIZING = auto()
     SELECTING_NEW_GOAL = auto()
-    INSPECTING_GOAL = auto()
+    MOVING_TO_GOAL = auto()
+    ARRIVED_AT_GOAL = auto()
+    MOVING_CLOSER_TO_BIRD = auto()
+    ARRIVED_AT_BIRD = auto()
     SELECTING_PERSON = auto()
     SERVICE_CONVERSATION = auto()
     MOVING_TO_BRIDGE = auto()
     BRIDGE_NAVIGATION = auto()
-    GO_TO_FINAL_POSITION = auto()
     ROBOT_FINISHED = auto()
 
 
@@ -70,6 +72,13 @@ class InspectionNavigator(Node):
         self.pushed_face_pub = self.create_publisher(Marker, '/pushed_faces', 10)
         self.pub_ring_marker = self.create_publisher(MarkerArray, '/ring_markers', 10)
         self.pub_bird_marker = self.create_publisher(MarkerArray, '/bird_markers', 10)
+
+        self.init_bird_sub = self.create_subscription(
+            PointStamped,
+            "/bird_initial_position_detection",
+            self.initial_bird_pose_callback,
+            10
+        )
 
         self.robot_state_pub = self.create_publisher(String, '/robot_internal_state', 10)
 
@@ -145,15 +154,12 @@ class InspectionNavigator(Node):
         self.bird_data = {}  # {(x, y): {'classifications': [str], 'visited': bool}}
 
         self.current_face = None
+        self.initial_detection_bird_pose = None
+        self.timer_start = None
+        self.stay_at_point_ms = 400
 
-        #self.ring_color = None
-        #self.visit_ring_position =None
-        #self.ring_visit_dist = 0.6
-        
-        
         #bridge navigation
         self.bridge_start_position = (0.00, -0.80, -np.pi/2)
-        self.red_parking_position = (1.24, -6.74, 0.0)
         self.latest_brige_position = None
         self.moving_to_brige_pose = None
 
@@ -341,6 +347,11 @@ class InspectionNavigator(Node):
             self.speak(f"{class_name}")
             self.get_logger().info(f"🕊️ New bird found at {pos} ({class_name})")
 
+    def initial_bird_pose_callback(self, msg):
+        birdx = msg.point.x
+        birdy = msg.point.y
+        self.initial_detection_bird_pose = (birdx, birdy)
+
     def map_callback(self, msg):
         self.resolution = msg.info.resolution
         self.origin = msg.info.origin.position
@@ -424,11 +435,11 @@ class InspectionNavigator(Node):
         self.latest_brige_position = (x, y, global_yaw, is_final_position)
 
     def robot_state_loop(self):
-        #self.get_logger().info(f"Current Robot State - {self.robot_state}")
+        self.get_logger().info(f"Current Robot State - {self.robot_state}")
         #current_time = self.get_clock().now()
         #this function should only include handler calls and state transitions for clarity
 
-        self.get_logger().info(f"Current birds: {self.bird_data}")
+        #self.get_logger().info(f"Current birds: {self.bird_data}")
 
         if self.robot_state == RobotState.INITIALIZING:
             robot_finished_initializing = self.handle_robot_initializing()
@@ -437,7 +448,8 @@ class InspectionNavigator(Node):
                 self.robot_state = RobotState.INITIALIZING
             else:
                 self.arm_position_ring_bird_search()
-                self.robot_state = RobotState.SELECTING_NEW_GOAL 
+                self.robot_state = RobotState.SELECTING_NEW_GOAL
+                #for bridge nav debugging 
                 #self.arm_position_bridge_nav()
                 #self.robot_state = RobotState.MOVING_TO_BRIDGE               
 
@@ -446,22 +458,56 @@ class InspectionNavigator(Node):
             new_goal_selected = self.handle_robot_selecting_new_inspection_goal()
 
             if new_goal_selected:
-                self.robot_state = RobotState.INSPECTING_GOAL
+                self.robot_state = RobotState.MOVING_TO_GOAL
 
+                #for conversation debugging
                 #if self.face_queue:
                 #    self.robot_state = RobotState.SELECTING_PERSON
 
             else:
                 self.robot_state = RobotState.SELECTING_PERSON
 
-        elif self.robot_state == RobotState.INSPECTING_GOAL:
+        elif self.robot_state == RobotState.MOVING_TO_GOAL:
 
-            goal_visited = self.handle_robot_inspecting_goal()
+            goal_visited = self.handle_robot_moving_to_goal()
 
             if goal_visited:
+                self.begin_timer()
+                self.robot_state = RobotState.ARRIVED_AT_GOAL
+            else:
+                self.robot_state = RobotState.MOVING_TO_GOAL
+
+        elif self.robot_state == RobotState.ARRIVED_AT_GOAL:
+
+            done_waiting = self.handle_robot_check_for_bird()
+
+            if done_waiting:
+                if self.initial_detection_bird_pose is not None:
+                    self.move_to_bird_inspection_pose()
+                    self.robot_state = RobotState.MOVING_CLOSER_TO_BIRD
+                else:
+                    self.robot_state = RobotState.SELECTING_NEW_GOAL
+            else:
+                self.robot_state = RobotState.ARRIVED_AT_GOAL
+
+        elif self.robot_state == RobotState.MOVING_CLOSER_TO_BIRD:
+
+            arrived = self.handle_robot_moving_to_bird_inspection_pose()
+
+            if arrived:
+                self.begin_timer()
+                self.robot_state = RobotState.ARRIVED_AT_BIRD
+            else:
+                self.robot_state = RobotState.MOVING_CLOSER_TO_BIRD
+
+        elif self.robot_state == RobotState.ARRIVED_AT_BIRD:
+
+            photographed_bird = self.handle_robot_photograph_bird()
+
+            if photographed_bird:
                 self.robot_state = RobotState.SELECTING_NEW_GOAL
             else:
-                self.robot_state = RobotState.INSPECTING_GOAL
+                self.robot_state = RobotState.ARRIVED_AT_BIRD
 
         elif self.robot_state == RobotState.SELECTING_PERSON:
 
@@ -496,17 +542,9 @@ class InspectionNavigator(Node):
             crossed_bridge = self.handle_robot_bridge_navigation()
 
             if crossed_bridge:
-                self.robot_state = RobotState.GO_TO_FINAL_POSITION
-            else:
-                self.robot_state = RobotState.BRIDGE_NAVIGATION
-
-        elif self.robot_state == RobotState.GO_TO_FINAL_POSITION:
-            done_parking = self.handle_robot_moving_to_parking()
-
-            if done_parking:
                 self.robot_state = RobotState.ROBOT_FINISHED
             else:
-                self.robot_state = RobotState.GO_TO_FINAL_POSITION
+                self.robot_state = RobotState.BRIDGE_NAVIGATION
 
         elif self.robot_state == RobotState.ROBOT_FINISHED:
             pass
@@ -516,17 +554,81 @@ class InspectionNavigator(Node):
 
         self.publish_robot_state()
 
+    def begin_timer(self):
+        now = self.get_clock().now()
+        t_ms = now.nanoseconds / 1e6
+        self.timer_start = t_ms
+        self.get_logger().info(f"Timer started at {t_ms:.3f} ms (ROS time)")
 
-    def handle_robot_moving_to_parking(self):
-        rx, ry, ryaw = self.robot_pose
+    def handle_robot_check_for_bird(self):
+        if self.timer_start is None:
+            return True
 
-        return True
+        now = self.get_clock().now()
+        cur_time = now.nanoseconds / 1e6
 
-        #self.move_to_position(self.red_parking_position)
+        if cur_time >= self.timer_start + self.stay_at_point_ms:
+            self.timer_start = None
+            return True
         return False
     
-    def move_to_position(self, bridge_pose):
-        self.cmdr.goToPose(bridge_pose)
+    def handle_robot_photograph_bird(self):
+        if self.timer_start is None:
+            return True
+
+        now = self.get_clock().now()
+        cur_time = now.nanoseconds / 1e6
+
+        if cur_time >= self.timer_start + self.stay_at_point_ms:
+            self.timer_start = None
+            return True
+        return False
+
+    def move_to_bird_inspection_pose(self):
+        rx, ry, ryaw = self.robot_pose
+        bx, by = self.initial_detection_bird_pose
+
+        # 1. Vector from robot to bird
+        dx = bx - rx
+        dy = by - ry
+        dist = np.hypot(dx, dy)
+
+        d = 0.3
+
+        if dist < (d+0.01):
+            self.get_logger().warn("Robot is already very close to the bird.")
+            movex, movey = rx, ry  # stay put
+        else:
+            # 2. Compute normalized direction, back up 0.3m from the bird toward the robot
+            nx = dx / dist
+            ny = dy / dist
+            movex = bx - nx * 0.3
+            movey = by - ny * 0.3
+
+        # 3. Compute desired yaw so robot faces the bird
+        moveyaw = np.arctan2(dy, dx)
+
+        pose = (movex, movey, moveyaw)
+        self.get_logger().info(
+            f"Moving to inspection pose: x={movex:.2f}, y={movey:.2f}, yaw={moveyaw:.2f} rad (30cm from bird)"
+        )
+        self.move_to_position(pose)
+
+    def handle_robot_moving_to_bird_inspection_pose(self):
+        finished_moving_to_pose = self.cmdr.isTaskComplete()
+
+        if finished_moving_to_pose:
+            self.get_logger().info("🏁 Arrived at goal.")
+            self.publish_visited_markers(self.current_visiting_map_point)
+            return True
+        
+        #still moving to pose
+        return False
+    
+
+
+    def move_to_position(self, pose):
+        self.cmdr.goToPose(pose)
 
     def normalize_angle_rad(self, angle_rad):
         return (angle_rad + math.pi) % (2 * math.pi) - math.pi
@@ -625,34 +727,10 @@ class InspectionNavigator(Node):
             return True
         return False
 
-    def handle_robot_inspecting_goal(self):
+    def handle_robot_moving_to_goal(self):
+        self.initial_detection_bird_pose = None
         finished_moving_to_pose = self.cmdr.isTaskComplete()
 
-        #== SERVICE HARDCODED POINTS ==
-        if self.current_visiting_map_point.get('hardcoded', False):
-            if finished_moving_to_pose:
-                self.get_logger().info("🐢🐢🐢 Arrived at hardcoded goal.")
-                self.publish_visited_markers(self.current_visiting_map_point)
-                return True
-            return False
-
-        #== SERVICE NORMAL POINTS ==
-        
-        #mark green markers as seen
-        for i, (tx, ty, nx, ny, _) in enumerate(self.current_visiting_map_point['targets']):
-            if i in self.current_visiting_map_point['seen']:
-                continue
-            if self.is_visible(self.robot_pose, (tx, ty), (nx, ny)):
-                self.current_visiting_map_point['seen'].add(i)
-
-        #all green markers seen - cancel move and mark visiting point as visited
-        #if len(self.current_visiting_map_point['seen']) == len(self.current_visiting_map_point['targets']):
-        #    self.cmdr.cancelTask()
-        #    self.publish_visited_markers(self.current_visiting_map_point)
-        #    self.get_logger().info("✅ All targets seen. Canceling move.")
-        #    return True
-        
-        #not all green markers seen
         if finished_moving_to_pose:
             self.get_logger().info("🏁 Arrived at goal.")
             self.publish_visited_markers(self.current_visiting_map_point)
@@ -660,6 +738,8 @@ class InspectionNavigator(Node):
         
         #still moving to pose
         return False
+    
+
         
     def handle_robot_detected_face_selection(self):
         if self.face_queue:
@@ -877,7 +957,6 @@ class InspectionNavigator(Node):
 
         self.pub_visited.publish(ma)
 
-
     def publish_ring_marker(self, position, color):
         marker = Marker()
         marker.header.frame_id = "map"
@@ -913,7 +992,6 @@ class InspectionNavigator(Node):
             marker.points.append(pt)
 
         self.pub_ring_marker.publish(MarkerArray(markers=[marker]))
-
 
     def publish_bird_marker(self, position, class_name=""):
         marker = Marker()
@@ -955,8 +1033,6 @@ class InspectionNavigator(Node):
         label.text = class_name
 
         self.pub_bird_marker.publish(MarkerArray(markers=[marker, label]))
-
-
 
     def publish_pushed_face_marker(self, position, normal=None, gender=None):
         if gender == "man":
@@ -1013,7 +1089,6 @@ class InspectionNavigator(Node):
             arrow.points.append(self.make_point(end))
 
             self.pushed_face_pub.publish(arrow)
-
 
     def make_point(self, pos):
         pt = PointStamped().point

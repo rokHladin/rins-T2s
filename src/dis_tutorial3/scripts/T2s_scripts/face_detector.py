@@ -88,7 +88,7 @@ class FaceDetector(Node):
     def rgb_callback(self, msg):
         self.faces.clear()
 
-        if (self.robot_state is None or (self.robot_state != "INSPECTING_GOAL" and self.robot_state != "SELECTING_NEW_GOAL")) and self.state_override is False:
+        if (self.robot_state is None or (self.robot_state != "MOVING_TO_GOAL" and self.robot_state != "SELECTING_NEW_GOAL")) and self.state_override is False:
             return
 
         try:
