@@ -65,8 +65,6 @@ class InspectionNavigator(Node):
 
         self.sub_map = self.create_subscription(OccupancyGrid, '/map', self.map_callback, qos)
 
-        
-
         self.costmap_sub = self.create_subscription(OccupancyGrid, '/global_costmap/costmap', self.global_costmap_callback, 1)
         self.global_costmap = None      # Latest OccupancyGrid message
         self.global_costmap_grid = None # Latest costmap as 2D NumPy array
@@ -825,11 +823,9 @@ class InspectionNavigator(Node):
         #still moving to pose
         return False
     
-
-        
     def handle_robot_detected_face_selection(self):
         if self.face_queue:
-            face = self.face_queue.popleft()
+            face = self.face_queue.pop()
             x, y = face[0]
             yaw = math.atan2(-face[1][1], -face[1][0])
 

@@ -226,7 +226,7 @@ class SpeechGUI:
         return SpeechResult(user_input or "", self.nlp)
 
     def speak(self, text: str, wait=False):
-        self.gui.display(f"Robot: {text}")
+        self.gui.display(f"Robot Golob: {text}")
         if self.enable_tts and self.engine:
             def tts_job():
                 try:

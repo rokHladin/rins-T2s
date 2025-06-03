@@ -1,5 +1,5 @@
 # DONE:
-- Ring detector - depth estimation (could be an issue with skewed ring mask casing more outliers than there are inliers)
+- final bridge crossing at land section
 - 
 - 
 - 

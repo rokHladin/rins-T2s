@@ -19,6 +19,12 @@ import message_filters
 
 from dis_tutorial3.msg import DetectedBird
 
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
+from reportlab.lib.utils import ImageReader
+from PIL import Image as PILImage
+import io
+
 class BirdDetector(Node):
     def __init__(self):
         super().__init__('detect_birds')
@@ -66,6 +72,9 @@ class BirdDetector(Node):
         self.group_threshold = 0.5
         self.min_detections = 1
 
+        self.detected_birds_for_pdf = []
+        self.pdf_path = "birds_detected.pdf"
+
         self.get_logger().info("🦜 Bird detection node ready (mode-split active, depth img sync enabled)")
 
     def state_callback(self, msg):
@@ -78,7 +87,7 @@ class BirdDetector(Node):
         if self.robot_state == "ARRIVED_AT_GOAL" or self.state_override:
             self.handle_arrived_at_goal(img_msg, depth_img_msg, pc_msg)
         elif self.robot_state == "ARRIVED_AT_BIRD":
-            self.handle_moving_closer_to_bird(img_msg, depth_img_msg, pc_msg)
+            self.handle_classify_bird(img_msg, depth_img_msg, pc_msg)
         # else: do nothing
 
     def handle_arrived_at_goal(self, img_msg, depth_img_msg, pc_msg):
@@ -154,10 +163,11 @@ class BirdDetector(Node):
                 continue
             break  # Only publish first bird
 
-    def handle_moving_closer_to_bird(self, img_msg, depth_img_msg, pc_msg):
+    def handle_classify_bird(self, img_msg, depth_img_msg, pc_msg):
         """YOLO + classification + grouping + DetectedBird publishing, with visualization."""
         img_bgr = self.bridge.imgmsg_to_cv2(img_msg, "bgr8")
         vis_img = img_bgr.copy()  # for drawing
+        pdf_img = img_bgr.copy()
         depth_img = self.bridge.imgmsg_to_cv2(depth_img_msg, desired_encoding="passthrough")
         # Optionally use depth_img for advanced filtering
 
@@ -187,8 +197,13 @@ class BirdDetector(Node):
             crop = img_bgr[y1:y2, x1:x2]
             if crop.size == 0 or crop.shape[0] < 10 or crop.shape[1] < 10:
                 continue
-
-            pdf_crop = vis_img[y1:y2, x1:x2]
+            
+            offset = 20
+            pdfy1 = y1 - offset
+            pdfy2 = y2 + offset
+            pdfx1 = x1 - offset
+            pdfx2 = x2 + offset
+            pdf_crop = pdf_img[pdfy1:pdfy2, pdfx1:pdfx2]
 
             # Draw bounding box on full image
             cv2.rectangle(vis_img, (x1, y1), (x2, y2), (0, 255, 0), 2)
@@ -260,25 +275,28 @@ class BirdDetector(Node):
                     self.get_logger().info(f"🛑 Skipping bird (too far: {distance:.2f}m)")
                     continue
 
-                self.add_to_group(map_point, class_name, class_confidence)
+                self.add_to_group(map_point, class_name, class_confidence, pdf_crop)
             except Exception as e:
                 self.get_logger().warn(f"TF transform failed: {e}")
 
         self.publish_groups()
 
-    def add_to_group(self, point, class_name, confidence):
+    def add_to_group(self, point, class_name, confidence, pdf_crop):
         position = np.array([point.x, point.y, point.z])
         for group in self.groups:
             if np.linalg.norm(group['position'] - position) < self.group_threshold:
                 group['positions'].append(position)
                 group['classifications'].append((class_name, confidence))
+                group['pdf_crop'] = pdf_crop
                 return
 
         self.groups.append({
             'positions': [position],
             'classifications': [(class_name, confidence)],
-            'position': position
+            'position': position,
+            'pdf_crop': pdf_crop
         })
+
 
     def publish_groups(self):
         for group in self.groups[:]:  # Safe removal
@@ -313,7 +331,86 @@ class BirdDetector(Node):
                 self.bird_pub.publish(msg)
                 self.get_logger().info(f"🟢 Published bird: {final_class}, Weighted Confidence: {final_confidence:.2f}, Pos: {avg_pos.round(2)}")
 
+
+                # Save PDF crop and name to detected_birds_for_pdf
+                if 'pdf_crop' in group and group['pdf_crop'] is not None:
+                    img_pil = PILImage.fromarray(cv2.cvtColor(group['pdf_crop'], cv2.COLOR_BGR2RGB))
+                    self.update_detected_birds_pdf(avg_pos, img_pil, final_class)
+
                 self.groups.remove(group)
+
+    def update_detected_birds_pdf(self, new_position, img_pil, class_name):
+        """Update or insert group info and regenerate PDF."""
+        replaced = False
+        # Replace existing group (if close in position), else add new
+        for i, item in enumerate(self.detected_birds_for_pdf):
+            if np.linalg.norm(item['position'] - new_position) < 0.2:  # Tolerance for "same group"
+                self.detected_birds_for_pdf[i] = {
+                    'img': img_pil,
+                    'name': class_name,
+                    'position': new_position.copy()
+                }
+                replaced = True
+                break
+        if not replaced:
+            self.detected_birds_for_pdf.append({
+                'img': img_pil,
+                'name': class_name,
+                'position': new_position.copy()
+            })
+        self.generate_bird_pdf()
+
+    def generate_bird_pdf(self):
+        c = canvas.Canvas(self.pdf_path, pagesize=letter)
+        width, height = letter
+        margin = 40
+        y = height - margin
+
+        # Title
+        title = "Robot Golob Report"
+        c.setFont("Helvetica-Bold", 20)
+        c.drawCentredString(width // 2, y, title)
+        y -= 40
+
+        img_width = 200
+        img_height = 150
+        gap_x = 40
+        gap_y = 70
+        per_row = 2
+
+        x_positions = [margin, margin + img_width + gap_x]
+        row = 0
+        col = 0
+
+        for i, item in enumerate(self.detected_birds_for_pdf):
+            img = item['img']
+            name = item['name']
+
+            # Resize to fit
+            img_resized = img.resize((img_width, img_height), resample=PILImage.Resampling.LANCZOS)
+            img_bytes = io.BytesIO()
+            img_resized.save(img_bytes, format='PNG')
+            img_bytes.seek(0)
+            img_reader = ImageReader(img_bytes)
+
+            x = x_positions[col]
+            c.drawImage(img_reader, x, y - img_height, width=img_width, height=img_height)
+
+            # Draw label
+            c.setFont("Helvetica", 14)
+            c.drawCentredString(x + img_width // 2, y - img_height - 18, name)
+
+            col += 1
+            if col >= per_row:
+                col = 0
+                y -= img_height + gap_y
+                # New page if necessary
+                if y < margin + img_height:
+                    c.showPage()
+                    y = height - margin
+
+        c.save()
+        self.get_logger().info(f"PDF updated: {self.pdf_path}")
 
 def main(args=None):
     rclpy.init(args=args)

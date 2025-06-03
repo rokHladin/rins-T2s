@@ -98,7 +98,7 @@ class BridgeNavigator(Node):
         return float(np.dot(a.T, b) / (norm_a * norm_b))
 
     # --- Red X Detection with Visualization ---
-    def detect_red_x_on_ground(self, closed, img_bgr, area_threshold=320, color_prob_threshold=0.75, erosion_iters=1):
+    def detect_red_x_on_ground(self, closed, img_bgr, area_threshold=1520, color_prob_threshold=0.75, erosion_iters=1):
 
         se_erosion = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
         closed = cv2.erode(closed, se_erosion, iterations=erosion_iters)
@@ -207,20 +207,54 @@ class BridgeNavigator(Node):
 
     def display_image_grid(self, image_dict, window_name="Ring Detection Overview", rows=2):
         labeled_images = []
+
+        # Step 1: Determine target (minimum) dimensions
+        min_h, min_w = float('inf'), float('inf')
+        for img in image_dict.values():
+            h, w = img.shape[:2]
+            min_h = min(min_h, h)
+            min_w = min(min_w, w)
+
+        min_h = min_h // 2
+        min_w = min_w // 2
+
+        # Step 2: Resize and format all images
         for label, img in image_dict.items():
+            # Ensure 3-channel format
             if len(img.shape) == 2 or (len(img.shape) == 3 and img.shape[2] == 1):
                 img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-            labeled = self.label_image(img, label)
+            else:
+                img = img.copy()
+
+            # Resize to smallest common resolution
+            resized_img = cv2.resize(img, (min_w, min_h), interpolation=cv2.INTER_AREA)
+
+            labeled = self.label_image(resized_img, label)
             padded = self.add_padding(labeled)
             labeled_images.append(padded)
+
+        # Step 3: Organize into grid
         columns = []
         for i in range(0, len(labeled_images), rows):
-            col_imgs = labeled_images[i:i+rows]
+            col_imgs = labeled_images[i:i + rows]
+
+            # Fill missing slots in column with white images
             if len(col_imgs) < rows:
                 h, w = col_imgs[0].shape[:2]
                 white = np.ones((h, w, 3), dtype=np.uint8) * 255
                 col_imgs += [white] * (rows - len(col_imgs))
+
             columns.append(cv2.vconcat(col_imgs))
+
+        # Step 4: Ensure same height for hconcat
+        max_h = max([c.shape[0] for c in columns])
+        for i in range(len(columns)):
+            h, w = columns[i].shape[:2]
+            if h < max_h:
+                pad_bottom = max_h - h
+                columns[i] = cv2.copyMakeBorder(columns[i], 0, pad_bottom, 0, 0, cv2.BORDER_CONSTANT, value=255)
+
+        # Step 5: Display
         grid = cv2.hconcat(columns)
         cv2.imshow(window_name, grid)
         cv2.waitKey(1)
@@ -379,7 +413,7 @@ class BridgeNavigator(Node):
                 angle_thresh_deg = 60.0
                 min_x_separation = width * 0.2
                 max_x_separation = width * 0.8
-                number_of_pairs_generated = 5
+                number_of_pairs_generated = 8
                 left_lines = [l for l in all_lines if l["center"][0] < image_center_x]
                 right_lines = [l for l in all_lines if l["center"][0] >= image_center_x]
                 left_lines = sorted(left_lines, key=lambda l: -l["center"][1])

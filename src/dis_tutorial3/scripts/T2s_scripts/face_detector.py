@@ -27,6 +27,9 @@ import torch
 
 from dis_tutorial3.msg import DetectedFace  # Custom message
 
+# ---- Added for message_filters ----
+from message_filters import Subscriber, ApproximateTimeSynchronizer
+
 class FaceDetector(Node):
     def __init__(self):
         super().__init__('detect_people')
@@ -59,9 +62,13 @@ class FaceDetector(Node):
             self.gender_model = None
             self.gender_processor = None
 
-        self.sub_rgb = self.create_subscription(Image, "/oakd/rgb/preview/image_raw", self.rgb_callback, qos_profile_sensor_data)
-        self.sub_pc = self.create_subscription(PointCloud2, "/oakd/rgb/preview/depth/points", self.pc_callback, qos_profile_sensor_data)
+        # ----------- Synchronized Subscriptions -------------
+        self.rgb_sub = Subscriber(self, Image, "/oakd/rgb/preview/image_raw", qos_profile=qos_profile_sensor_data)
+        self.pc_sub  = Subscriber(self, PointCloud2, "/oakd/rgb/preview/depth/points", qos_profile=qos_profile_sensor_data)
+        self.ts = ApproximateTimeSynchronizer([self.rgb_sub, self.pc_sub], queue_size=10, slop=0.1)
+        self.ts.registerCallback(self.synced_callback)
 
+        # Robot state
         self.sub_robot_state = self.create_subscription(
             String,
             '/robot_internal_state',
@@ -84,18 +91,17 @@ class FaceDetector(Node):
     def state_callback(self, msg):
         self.robot_state = msg.data
 
-
-    def rgb_callback(self, msg):
+    def synced_callback(self, rgb_msg, pc_msg):
         self.faces.clear()
 
+        # Respect robot state logic
         if (self.robot_state is None or (self.robot_state != "MOVING_TO_GOAL" and self.robot_state != "SELECTING_NEW_GOAL")) and self.state_override is False:
             return
 
         try:
-            img = self.bridge.imgmsg_to_cv2(msg, "bgr8")
-            results = self.model.predict(img, imgsz=(256, 320), conf = self.face_confidence_threshold, show=False, verbose=False, classes=[0], device=self.device)
-
-            # Create a copy of the image for display
+            # ---- FACE DETECTION ----
+            img = self.bridge.imgmsg_to_cv2(rgb_msg, "bgr8")
+            results = self.model.predict(img, imgsz=(256, 320), conf=self.face_confidence_threshold, show=False, verbose=False, classes=[0], device=self.device)
             display_img = img.copy()
             
             for r in results:
@@ -103,18 +109,18 @@ class FaceDetector(Node):
                     x1, y1, x2, y2 = map(int, bbox)
                     cx = (x1 + x2) // 2
                     cy = (y1 + y2) // 2
-                    
+
                     # Extract face region for gender classification
                     face_region = img[y1:y2, x1:x2]
-                    
+
                     # Classify gender if face region is large enough
                     if face_region.shape[0] > 30 and face_region.shape[1] > 30:
                         gender, confidence = self.classify_gender(face_region)
                     else:
                         gender, confidence = "unknown", 0.0
-                    
+
                     self.faces.append((cx, cy, gender, confidence))
-                    
+
                     # Choose color based on gender: blue for men, pink for women, green for unknown
                     if gender == "man":
                         color = (255, 0, 0)  # Blue in BGR
@@ -125,132 +131,131 @@ class FaceDetector(Node):
                     else:
                         color = (0, 255, 0)  # Green for unknown
                         label_text = f"Unknown"
-                    
+
                     # Draw bounding box around detected face
                     cv2.rectangle(display_img, (x1, y1), (x2, y2), color, 2)
-                    
                     # Add label
                     cv2.putText(display_img, label_text, (x1, y1 - 10), 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-                    
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
                     # Draw center point
                     cv2.circle(display_img, (cx, cy), 3, (0, 0, 255), -1)
 
             # Add status text
             status_text = f"Faces detected: {len(self.faces)}"
             cv2.putText(display_img, status_text, (10, 30), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-            
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
             # Display the image
             cv2.imshow('Face Detection - Press Q to quit', display_img)
-            
-            # Handle window events (non-blocking)
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q'):
                 self.get_logger().info("Quit key pressed. Shutting down...")
                 rclpy.shutdown()
 
-        except Exception as e:
-            self.get_logger().warn(f"Failed to process image: {e}")
-
-    def pc_callback(self, msg):
-        if not self.faces:
-            return
-
-        try:
-            pc_array = pc2.read_points_numpy(msg, field_names=("x", "y", "z")).reshape((msg.height, msg.width, 3))
-        except Exception as e:
-            self.get_logger().warn(f"Failed to parse point cloud: {e}")
-            return
-
-        for face_data in self.faces:
-            cx, cy, gender, confidence = face_data
-            self.get_logger().warn(f"Face found at ({cx},{cy}) - {gender} ({confidence:.2f})")
-
-            pc_check_depth = pc_array[cy, cx, :]
-            if np.isnan(pc_check_depth).any() or np.linalg.norm(pc_check_depth) > self.face_depth_check:
-                self.get_logger().warn("Face is too far or invalid depth.")
-                continue
-
-            window = 10
-            region = pc_array[max(0, cy - window):cy + window, max(0, cx - window):cx + window, :]
-            points = region.reshape(-1, 3)
-            points = points[~np.isnan(points).any(axis=1)]
-
-            if len(points) < 30:
-                continue
-
-            normal, centroid = self.fit_plane(points)
-            if normal is None or not np.all(np.isfinite(centroid)) or not np.all(np.isfinite(normal)):
-                self.get_logger().warn("Plane fitting failed or returned invalid values.")
-                continue
-
-            if np.linalg.norm(normal) < 1e-3:
-                self.get_logger().warn("Normal vector too small, skipping.")
-                continue
-
-            # Flip normal to face the camera
-            camera_origin = np.array([0.0, 0.0, 0.0])
-            to_centroid = centroid - camera_origin
-            if np.dot(normal, to_centroid) > 0:
-                normal = -normal
-
-            offset = centroid + normal * 0.5
-            if not np.all(np.isfinite(offset)):
-                self.get_logger().warn("Offset point contains NaNs or infs, skipping.")
-                continue
+            # ---- POINT CLOUD ASSOCIATION ----
+            if not self.faces:
+                return
 
             try:
-                # Properly create PointStamped
-                stamped = PointStamped()
-                stamped.header.stamp = self.get_clock().now().to_msg()
-                stamped.header.frame_id = msg.header.frame_id
-                stamped.point.x = float(offset[0])
-                stamped.point.y = float(offset[1])
-                stamped.point.z = float(offset[2])
+                pc_array = pc2.read_points_numpy(pc_msg, field_names=("x", "y", "z")).reshape((pc_msg.height, pc_msg.width, 3))
+            except Exception as e:
+                self.get_logger().warn(f"Failed to parse point cloud: {e}")
+                return
 
-                transform = self.tf_buffer.lookup_transform(
-                    target_frame="map",
-                    source_frame=msg.header.frame_id,
-                    time=rclpy.time.Time(),
-                    timeout=rclpy.duration.Duration(seconds=0.5)
-                )
+            for face_data in self.faces:
+                cx, cy, gender, confidence = face_data
+                self.get_logger().warn(f"Face found at ({cx},{cy}) - {gender} ({confidence:.2f})")
 
-                transformed = tf2_geometry_msgs.do_transform_point(stamped, transform)
-
-                # Prepare and validate the normal
-                normal_msg = Vector3Stamped()
-                normal_msg.header.stamp = rclpy.time.Time().to_msg()
-                normal_msg.header.frame_id = stamped.header.frame_id
-                normal_msg.vector.x = float(normal[0])
-                normal_msg.vector.y = float(normal[1])
-                normal_msg.vector.z = float(normal[2])
-
-                transformed_normal = self.tf_buffer.transform(
-                    normal_msg,
-                    target_frame="map",
-                    timeout=rclpy.duration.Duration(seconds=0.5)
-                )
-
-                map_normal = np.array([
-                    transformed_normal.vector.x,
-                    transformed_normal.vector.y,
-                    transformed_normal.vector.z
-                ])
-
-                if not np.all(np.isfinite(map_normal)):
-                    self.get_logger().warn("Transformed normal contains NaNs.")
+                if cy >= pc_array.shape[0] or cx >= pc_array.shape[1]:
+                    self.get_logger().warn("Face center out of pointcloud image bounds.")
                     continue
 
-                self.add_to_group(
-                    np.array([transformed.point.x, transformed.point.y, transformed.point.z]),
-                    map_normal,
-                    gender,
-                    confidence
-                )
+                pc_check_depth = pc_array[cy, cx, :]
+                if np.isnan(pc_check_depth).any() or np.linalg.norm(pc_check_depth) > self.face_depth_check:
+                    self.get_logger().warn("Face is too far or invalid depth.")
+                    continue
 
-            except Exception as e:
-                self.get_logger().warn(f"TF transform failed: {e}")
+                window = 10
+                region = pc_array[max(0, cy - window):cy + window, max(0, cx - window):cx + window, :]
+                points = region.reshape(-1, 3)
+                points = points[~np.isnan(points).any(axis=1)]
+
+                if len(points) < 30:
+                    continue
+
+                normal, centroid = self.fit_plane(points)
+                if normal is None or not np.all(np.isfinite(centroid)) or not np.all(np.isfinite(normal)):
+                    self.get_logger().warn("Plane fitting failed or returned invalid values.")
+                    continue
+
+                if np.linalg.norm(normal) < 1e-3:
+                    self.get_logger().warn("Normal vector too small, skipping.")
+                    continue
+
+                # Flip normal to face the camera
+                camera_origin = np.array([0.0, 0.0, 0.0])
+                to_centroid = centroid - camera_origin
+                if np.dot(normal, to_centroid) > 0:
+                    normal = -normal
+
+                offset = centroid + normal * 0.5
+                if not np.all(np.isfinite(offset)):
+                    self.get_logger().warn("Offset point contains NaNs or infs, skipping.")
+                    continue
+
+                try:
+                    # Properly create PointStamped
+                    stamped = PointStamped()
+                    stamped.header.stamp = self.get_clock().now().to_msg()
+                    stamped.header.frame_id = pc_msg.header.frame_id
+                    stamped.point.x = float(offset[0])
+                    stamped.point.y = float(offset[1])
+                    stamped.point.z = float(offset[2])
+
+                    transform = self.tf_buffer.lookup_transform(
+                        target_frame="map",
+                        source_frame=pc_msg.header.frame_id,
+                        time=rclpy.time.Time(),
+                        timeout=rclpy.duration.Duration(seconds=0.5)
+                    )
+
+                    transformed = tf2_geometry_msgs.do_transform_point(stamped, transform)
+
+                    # Prepare and validate the normal
+                    normal_msg = Vector3Stamped()
+                    normal_msg.header.stamp = rclpy.time.Time().to_msg()
+                    normal_msg.header.frame_id = stamped.header.frame_id
+                    normal_msg.vector.x = float(normal[0])
+                    normal_msg.vector.y = float(normal[1])
+                    normal_msg.vector.z = float(normal[2])
+
+                    transformed_normal = self.tf_buffer.transform(
+                        normal_msg,
+                        target_frame="map",
+                        timeout=rclpy.duration.Duration(seconds=0.5)
+                    )
+
+                    map_normal = np.array([
+                        transformed_normal.vector.x,
+                        transformed_normal.vector.y,
+                        transformed_normal.vector.z
+                    ])
+
+                    if not np.all(np.isfinite(map_normal)):
+                        self.get_logger().warn("Transformed normal contains NaNs.")
+                        continue
+
+                    self.add_to_group(
+                        np.array([transformed.point.x, transformed.point.y, transformed.point.z]),
+                        map_normal,
+                        gender,
+                        confidence
+                    )
+
+                except Exception as e:
+                    self.get_logger().warn(f"TF transform failed: {e}")
+
+        except Exception as e:
+            self.get_logger().warn(f"Failed to process synchronized messages: {e}")
 
     def fit_plane(self, points, threshold=0.015, max_iters=100):
         best_inliers = []
@@ -287,7 +292,6 @@ class FaceDetector(Node):
 
         return None, None
 
-    
     def add_to_group(self, new_point, normal, gender, confidence, threshold=0.5):
         for group in self.face_groups:
             if np.linalg.norm(group['point'] - new_point) < threshold:
@@ -301,7 +305,6 @@ class FaceDetector(Node):
     def publish_new_faces(self):
         for i, group in enumerate(self.face_groups):
             if len(group['points']) < self.number_of_detections_threshold:
-                #self.get_logger().warn(f"too little measurements. {i}")
                 continue  # Not enough observations for reliable estimate
 
             avg_pos = np.mean(group['points'], axis=0)
