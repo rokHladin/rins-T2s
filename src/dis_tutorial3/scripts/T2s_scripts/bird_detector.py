@@ -367,7 +367,7 @@ class BirdDetector(Node):
         y = height - margin
 
         # Title
-        title = "Robot Golob Report"
+        title = "Report Golob"
         c.setFont("Helvetica-Bold", 20)
         c.drawCentredString(width // 2, y, title)
         y -= 40
