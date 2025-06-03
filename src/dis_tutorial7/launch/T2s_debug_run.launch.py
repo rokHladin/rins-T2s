@@ -30,7 +30,7 @@ def generate_launch_description():
     )
 
     arm_mover = TimerAction(
-        period=1.0,
+        period=15.0,
         actions=[Node(
             package='dis_tutorial7',
             executable='arm_mover_actions.py',
@@ -42,7 +42,7 @@ def generate_launch_description():
     # RViz2 node with your custom config
     rviz_config_path = PathJoinSubstitution([pkg_dis_tutorial3, 'rviz', 'exported_config.rviz'])
     rviz_node = TimerAction(
-        period=5.0,
+        period=15.0,
         actions=[Node(
             package='rviz2',
             executable='rviz2',
@@ -53,7 +53,7 @@ def generate_launch_description():
     )
 
     planner_node = TimerAction(
-        period=12.0,
+        period=20.0,
         actions=[Node(
             package='dis_tutorial3',
             executable='planner.py',
@@ -63,7 +63,7 @@ def generate_launch_description():
     )
 
     face_detector = TimerAction(
-        period=14.0,
+        period=22.0,
         actions=[Node(
             package='dis_tutorial3',
             executable='face_detector.py',
@@ -73,7 +73,7 @@ def generate_launch_description():
     )
 
     ring_detector = TimerAction(
-        period=16.0,
+        period=22.0,
         actions=[Node(
             package='dis_tutorial3',
             executable='ring_detector.py',
@@ -83,7 +83,7 @@ def generate_launch_description():
     )
 
     bird_detector = TimerAction(
-        period=16.0,
+        period=22.0,
         actions=[Node(
             package='dis_tutorial3',
             executable='bird_detector.py',
@@ -92,8 +92,18 @@ def generate_launch_description():
         )]
     )
 
+    bridge_nav = TimerAction(
+        period=22.0,
+        actions=[Node(
+            package='dis_tutorial7',
+            executable='bridge_navigation.py',
+            name='bridge_nav',
+            output='screen'
+        )]
+    )
+
     navigator = TimerAction(
-        period=20.0,
+        period=25.0,
         actions=[Node(
             package='dis_tutorial3',
             executable='navigator.py',
@@ -102,15 +112,7 @@ def generate_launch_description():
         )]
     )
 
-    bridge_nav = TimerAction(
-        period=21.0,
-        actions=[Node(
-            package='dis_tutorial7',
-            executable='bridge_navigation.py',
-            name='bridge_nav',
-            output='screen'
-        )]
-    )
+
 
     return LaunchDescription(arguments + [
         sim_base,

@@ -53,41 +53,68 @@ class BirdDetector(Node):
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
+        # Add depth image subscriber
         self.rgb_sub = message_filters.Subscriber(self, Image, "/top_camera/rgb/preview/image_raw")
+        self.depth_sub = message_filters.Subscriber(self, Image, "/top_camera/rgb/preview/depth")
         self.pc_sub = message_filters.Subscriber(self, PointCloud2, "/top_camera/rgb/preview/depth/points")
         self.ts = message_filters.ApproximateTimeSynchronizer(
-            [self.rgb_sub, self.pc_sub], queue_size=10, slop=0.1
+            [self.rgb_sub, self.depth_sub, self.pc_sub], queue_size=10, slop=0.1
         )
         self.ts.registerCallback(self.synced_callback)
 
         self.groups = []
         self.group_threshold = 0.5
-        self.min_detections = 3
+        self.min_detections = 1
 
-        self.get_logger().info("🦜 Bird detection node ready (mode-split active)")
+        self.get_logger().info("🦜 Bird detection node ready (mode-split active, depth img sync enabled)")
 
     def state_callback(self, msg):
         self.robot_state = msg.data
 
-    def synced_callback(self, img_msg, pc_msg):
+    def synced_callback(self, img_msg, depth_img_msg, pc_msg):
         if self.robot_state is None and not self.state_override:
             return
-
+        
         if self.robot_state == "ARRIVED_AT_GOAL" or self.state_override:
-            self.handle_arrived_at_goal(img_msg, pc_msg)
+            self.handle_arrived_at_goal(img_msg, depth_img_msg, pc_msg)
         elif self.robot_state == "ARRIVED_AT_BIRD":
-            self.handle_moving_closer_to_bird(img_msg, pc_msg)
+            self.handle_moving_closer_to_bird(img_msg, depth_img_msg, pc_msg)
         # else: do nothing
 
-    def handle_arrived_at_goal(self, img_msg, pc_msg):
-        """Only YOLO detection, publish PointStamped for first bird found."""
+    def handle_arrived_at_goal(self, img_msg, depth_img_msg, pc_msg):
+        """YOLO detection, mask inf points, publish PointStamped for first bird found."""
         img_bgr = self.bridge.imgmsg_to_cv2(img_msg, "bgr8")
-        results = self.yolo_model.predict(source=[img_bgr], conf=0.7, save=False, verbose=False)
+        depth_img = self.bridge.imgmsg_to_cv2(depth_img_msg, "32FC1")
+
+        depth_thr = 2.0
+        mask = depth_img < depth_thr
+        img_bgr[~mask] = [255, 255, 255]
+
+        pc_array = pc2.read_points_numpy(pc_msg, field_names=("x", "y", "z"), skip_nans=False)
+        try:
+            points_reshaped = pc_array.reshape((pc_msg.height, pc_msg.width, 3))
+        except Exception as e:
+            self.get_logger().warn(f"Failed to reshape point cloud: {e}")
+            return
+
+        conf_thr = 0.3
+        person_thr = 0.6
+
+        results = self.yolo_model.predict(source=[img_bgr], conf=conf_thr, save=False, verbose=False, show=True)
         boxes = results[0].boxes
 
         for box in boxes:
+            class_idx = int(box.cls[0])
+            class_name = self.yolo_model.names[class_idx]
+            if class_name != "bird" and class_name != "person":
+                continue
+
             conf = float(box.conf[0])
-            if conf < 0.5:
+
+            if class_name == "person" and (conf > person_thr or conf < conf_thr):
+                continue
+
+            if class_name == "bird" and conf < conf_thr:
                 continue
 
             x1, y1, x2, y2 = map(int, box.xyxy[0].cpu().numpy())
@@ -103,7 +130,7 @@ class BirdDetector(Node):
                 continue
 
             points_sample = points_reshaped[v_range, u_range].reshape(-1, 3)
-            valid_points = points_sample[np.isfinite(points_sample).all(axis=1) & (np.linalg.norm(points_sample, axis=1) > 0.05)]
+            valid_points = points_sample[np.isfinite(points_sample).all(axis=1)]
 
             if valid_points.shape[0] < 3:
                 self.get_logger().warn("Not enough valid points for initial detection.")
@@ -126,24 +153,42 @@ class BirdDetector(Node):
                 self.get_logger().warn(f"TF transform failed: {e}")
                 continue
             break  # Only publish first bird
-        # No need to call group logic
 
-    def handle_moving_closer_to_bird(self, img_msg, pc_msg):
+    def handle_moving_closer_to_bird(self, img_msg, depth_img_msg, pc_msg):
         """YOLO + classification + grouping + DetectedBird publishing, with visualization."""
         img_bgr = self.bridge.imgmsg_to_cv2(img_msg, "bgr8")
         vis_img = img_bgr.copy()  # for drawing
-        results = self.yolo_model.predict(source=[img_bgr], conf=0.7, save=False, verbose=False)
+        depth_img = self.bridge.imgmsg_to_cv2(depth_img_msg, desired_encoding="passthrough")
+        # Optionally use depth_img for advanced filtering
+
+
+        depth_thr = 2.0
+        mask = depth_img < depth_thr
+        img_bgr[~mask] = [255, 255, 255]
+        #vis_img[~mask] = [255, 255, 255]
+
+        conf_thr = 0.7
+
+        results = self.yolo_model.predict(source=[img_bgr], conf=conf_thr, save=False, verbose=False)
         boxes = results[0].boxes
 
         for box in boxes:
+
+            class_idx = int(box.cls[0])
+            class_name = self.yolo_model.names[class_idx]
+            if class_name != "bird":
+                continue
+
             conf = float(box.conf[0])
-            if conf < 0.5:
+            if conf < conf_thr:
                 continue
 
             x1, y1, x2, y2 = map(int, box.xyxy[0].cpu().numpy())
             crop = img_bgr[y1:y2, x1:x2]
             if crop.size == 0 or crop.shape[0] < 10 or crop.shape[1] < 10:
                 continue
+
+            pdf_crop = vis_img[y1:y2, x1:x2]
 
             # Draw bounding box on full image
             cv2.rectangle(vis_img, (x1, y1), (x2, y2), (0, 255, 0), 2)
@@ -160,7 +205,7 @@ class BirdDetector(Node):
                 if class_confidence < 0.4:
                     self.get_logger().info(f"Skipped classification {self.class_names[class_idx.item()]} (low confidence: {class_confidence:.2f})")
                     continue
-                
+
                 class_name = self.class_names[class_idx.item()]
                 self.get_logger().info(f"Detected Bird: {class_name} Confidence: {class_confidence}")
 
@@ -179,15 +224,20 @@ class BirdDetector(Node):
             except Exception as e:
                 self.get_logger().warn(f"Failed to reshape point cloud: {e}")
                 continue
+            
+            depth_crop = depth_img[y1:y2, x1:x2].reshape(-1)  # shape: (N,)
+            points_sample = points_reshaped[y1:y2, x1:x2].reshape(-1, 3)  # shape: (N, 3)
 
-            points_sample = points_reshaped[y1:y2, x1:x2].reshape(-1, 3)
-            valid_points = points_sample[np.isfinite(points_sample).all(axis=1)]
+            mask_valid = np.isfinite(depth_crop) & (depth_crop <= 1.0)
 
-            if valid_points.shape[0] < 3:
-                self.get_logger().warn("Not enough valid points.")
+            close_points = points_sample[mask_valid]
+
+            if close_points.shape[0] < 3:
+                self.get_logger().warn("Not enough close points after depth threshold.")
                 continue
 
-            avg_3d = np.median(valid_points, axis=0)
+            avg_3d = np.median(close_points, axis=0)
+
             stamped_point = PointStamped()
             stamped_point.header.stamp = self.get_clock().now().to_msg()
             stamped_point.header.frame_id = img_msg.header.frame_id
@@ -215,7 +265,6 @@ class BirdDetector(Node):
                 self.get_logger().warn(f"TF transform failed: {e}")
 
         self.publish_groups()
-
 
     def add_to_group(self, point, class_name, confidence):
         position = np.array([point.x, point.y, point.z])

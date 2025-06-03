@@ -31,7 +31,7 @@ class Planner(Node):
         self.free_thresh = 0.25
 
         # Marker generation settings
-        self.cam_offset = 0.8
+        self.cam_offset = 0.7
         self.target_offset = 0.2
         self.spacing = 0.3
         self.max_line_length_m = 2.0

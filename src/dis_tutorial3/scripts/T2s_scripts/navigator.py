@@ -64,6 +64,14 @@ class InspectionNavigator(Node):
         )
 
         self.sub_map = self.create_subscription(OccupancyGrid, '/map', self.map_callback, qos)
+
+        
+
+        self.costmap_sub = self.create_subscription(OccupancyGrid, '/global_costmap/costmap', self.global_costmap_callback, 1)
+        self.global_costmap = None      # Latest OccupancyGrid message
+        self.global_costmap_grid = None # Latest costmap as 2D NumPy array
+        self.global_costmap_info = None # For later coordinate conversion
+
         self.sub_markers = self.create_subscription(MarkerArray, '/inspection_markers', self.markers_callback, qos)
 
         self.pub_visited = self.create_publisher(MarkerArray, '/visited_inspection_markers', 10)
@@ -123,6 +131,9 @@ class InspectionNavigator(Node):
         
         self.sub_odom = self.create_subscription(Odometry, '/odom', self.odom_callback, qos_profile_sensor_data)
 
+
+
+
         #initial robot state
         self.robot_state = RobotState.INITIALIZING
 
@@ -154,9 +165,9 @@ class InspectionNavigator(Node):
         self.bird_data = {}  # {(x, y): {'classifications': [str], 'visited': bool}}
 
         self.current_face = None
-        self.initial_detection_bird_pose = None
+        self.initial_detection_bird_point = None
         self.timer_start = None
-        self.stay_at_point_ms = 400
+        self.stay_at_point_ms = 600
 
         #bridge navigation
         self.bridge_start_position = (0.00, -0.80, -np.pi/2)
@@ -350,7 +361,7 @@ class InspectionNavigator(Node):
     def initial_bird_pose_callback(self, msg):
         birdx = msg.point.x
         birdy = msg.point.y
-        self.initial_detection_bird_pose = (birdx, birdy)
+        self.initial_detection_bird_point = (birdx, birdy)
 
     def map_callback(self, msg):
         self.resolution = msg.info.resolution
@@ -364,6 +375,12 @@ class InspectionNavigator(Node):
         self.occupancy[grid == 100] = 0    # Wall/obstacle
         self.occupancy[grid == 0] = 1      # Free space
         self.occupancy[grid == -1] = -1    # Unknown
+
+    def global_costmap_callback(self, msg: OccupancyGrid):
+        self.global_costmap = msg
+        self.global_costmap_info = msg.info
+        grid = np.array(msg.data, dtype=np.int8).reshape((msg.info.height, msg.info.width))
+        self.global_costmap_grid = grid
 
     def markers_callback(self, msg):
         self.get_logger().info("📦 Received markers")
@@ -482,7 +499,7 @@ class InspectionNavigator(Node):
             done_waiting = self.handle_robot_check_for_bird()
 
             if done_waiting:
-                if self.initial_detection_bird_pose is not None:
+                if self.valid_bird_point():
                     self.move_to_bird_inspection_pose()
                     self.robot_state = RobotState.MOVING_CLOSER_TO_BIRD
                 else:
@@ -584,35 +601,103 @@ class InspectionNavigator(Node):
             return True
         return False
 
-    def move_to_bird_inspection_pose(self):
+    def valid_bird_point(self):
+        if self.initial_detection_bird_point is None:
+            return False
+        
         rx, ry, ryaw = self.robot_pose
-        bx, by = self.initial_detection_bird_pose
+        bx, by = self.initial_detection_bird_point
 
         # 1. Vector from robot to bird
         dx = bx - rx
         dy = by - ry
         dist = np.hypot(dx, dy)
 
-        d = 0.3
+        dist_thresh = 1.5
 
-        if dist < (d+0.01):
-            self.get_logger().warn("Robot is already very close to the bird.")
-            movex, movey = rx, ry  # stay put
-        else:
-            # 2. Compute normalized direction, back up 0.3m from the bird toward the robot
-            nx = dx / dist
-            ny = dy / dist
-            movex = bx - nx * 0.3
-            movey = by - ny * 0.3
+        if dist <= dist_thresh:
+            return True
+        
+        return False
 
-        # 3. Compute desired yaw so robot faces the bird
-        moveyaw = np.arctan2(dy, dx)
+    def is_costmap_cell_free(self, wx, wy, conservativeness = 2):
+        """
+        Returns True if the 9x9 cell patch centered at (wx, wy) in world coords is entirely free
+        (no cell in the patch is 100 or -1).
+        """
+        if self.global_costmap_grid is None or self.global_costmap_info is None:
+            self.get_logger().warn("Costmap not yet received!")
+            return False
+
+        mx = int((wx - self.global_costmap_info.origin.position.x) / self.global_costmap_info.resolution)
+        my = int((wy - self.global_costmap_info.origin.position.y) / self.global_costmap_info.resolution)
+
+        radius = conservativeness
+        height, width = self.global_costmap_grid.shape
+
+        for dx in range(-radius, radius + 1):
+            for dy in range(-radius, radius + 1):
+                nx = mx + dx
+                ny = my + dy
+                if 0 <= nx < width and 0 <= ny < height:
+                    cell_value = self.global_costmap_grid[ny, nx]
+                    if cell_value == 100 or cell_value == -1:
+                        return False
+                else:
+                    # Out of bounds is treated as not free
+                    return False
+
+        return True
+
+
+    def move_to_bird_inspection_pose(self):
+        distances = [0.4, 0.42, 0.45]
+        max_sweep_deg = 180
+        angle_step_deg = 2
+
+        rx, ry, _ = self.robot_pose
+        bx, by = self.initial_detection_bird_point
+
+        dx = rx - bx
+        dy = ry - by
+        base_angle = np.arctan2(dy, dx)
+
+        num_steps = int(max_sweep_deg / angle_step_deg)
+        angle_offsets = [0]
+        for i in range(1, num_steps + 1):
+            angle_offsets.append(i * angle_step_deg)
+            angle_offsets.append(-i * angle_step_deg)
+        angle_offsets = angle_offsets[:2 * num_steps + 1]
+        angle_offsets_rad = [np.deg2rad(a) for a in angle_offsets]
+
+        got_distance_point = False
+        for d in distances:
+            # Try each candidate inspection pose
+            found = False
+            for offset in angle_offsets_rad:
+                check_angle = base_angle + offset
+                movex = bx + d * np.cos(check_angle)
+                movey = by + d * np.sin(check_angle)
+                moveyaw = np.arctan2(by - movey, bx - movex)
+
+                if self.is_costmap_cell_free(movex, movey, conservativeness=5):
+                    found = True
+                    break
+            
+            if found:
+                got_distance_point = True
+                break
+
+        if not got_distance_point:
+            self.get_logger().warn("No free inspection pose found around bird!")
+            return
 
         pose = (movex, movey, moveyaw)
         self.get_logger().info(
-            f"Moving to inspection pose: x={movex:.2f}, y={movey:.2f}, yaw={moveyaw:.2f} rad (30cm from bird)"
+            f"Moving to inspection pose: x={movex:.2f}, y={movey:.2f}, yaw={moveyaw:.2f} rad ({d*100:.0f}cm from bird, angle {np.rad2deg(check_angle):.1f}°)"
         )
         self.move_to_position(pose)
+
 
     def handle_robot_moving_to_bird_inspection_pose(self):
         finished_moving_to_pose = self.cmdr.isTaskComplete()
@@ -728,7 +813,6 @@ class InspectionNavigator(Node):
         return False
 
     def handle_robot_moving_to_goal(self):
-        self.initial_detection_bird_pose = None
         finished_moving_to_pose = self.cmdr.isTaskComplete()
 
         if finished_moving_to_pose:
@@ -736,6 +820,8 @@ class InspectionNavigator(Node):
             self.publish_visited_markers(self.current_visiting_map_point)
             return True
         
+        self.initial_detection_bird_point = None
+
         #still moving to pose
         return False
     
