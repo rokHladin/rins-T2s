@@ -142,11 +142,14 @@ class RingDetector(Node):
         thickness = 1
         text_size, _ = cv2.getTextSize(label_text, font, font_scale, thickness)
         text_width, text_height = text_size
+
         labeled_img = np.zeros((img.shape[0] + text_height + 10, img.shape[1], 3), dtype=np.uint8)
         labeled_img[text_height + 10:, :, :] = img
+
         text_x = (img.shape[1] - text_width) // 2
         text_y = text_height + 2
         cv2.putText(labeled_img, label_text, (text_x, text_y), font, font_scale, (255, 255, 255), thickness)
+
         return labeled_img
 
     def add_padding(self, img, pad=10, color=(255, 255, 255)):
@@ -154,20 +157,54 @@ class RingDetector(Node):
 
     def display_image_grid(self, image_dict, window_name="Ring Detection Overview", rows=2):
         labeled_images = []
+
+        # Step 1: Determine target (minimum) dimensions
+        min_h, min_w = float('inf'), float('inf')
+        for img in image_dict.values():
+            h, w = img.shape[:2]
+            min_h = min(min_h, h)
+            min_w = min(min_w, w)
+
+        min_h = min_h // 2
+        min_w = min_w // 2
+
+        # Step 2: Resize and format all images
         for label, img in image_dict.items():
-            if len(img.shape) == 2 or img.shape[2] == 1:
+            # Ensure 3-channel format
+            if len(img.shape) == 2 or (len(img.shape) == 3 and img.shape[2] == 1):
                 img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-            labeled = self.label_image(img, label)
+            else:
+                img = img.copy()
+
+            # Resize to smallest common resolution
+            resized_img = cv2.resize(img, (min_w, min_h), interpolation=cv2.INTER_AREA)
+
+            labeled = self.label_image(resized_img, label)
             padded = self.add_padding(labeled)
             labeled_images.append(padded)
+
+        # Step 3: Organize into grid
         columns = []
         for i in range(0, len(labeled_images), rows):
-            col_imgs = labeled_images[i:i+rows]
+            col_imgs = labeled_images[i:i + rows]
+
+            # Fill missing slots in column with white images
             if len(col_imgs) < rows:
                 h, w = col_imgs[0].shape[:2]
                 white = np.ones((h, w, 3), dtype=np.uint8) * 255
                 col_imgs += [white] * (rows - len(col_imgs))
+
             columns.append(cv2.vconcat(col_imgs))
+
+        # Step 4: Ensure same height for hconcat
+        max_h = max([c.shape[0] for c in columns])
+        for i in range(len(columns)):
+            h, w = columns[i].shape[:2]
+            if h < max_h:
+                pad_bottom = max_h - h
+                columns[i] = cv2.copyMakeBorder(columns[i], 0, pad_bottom, 0, 0, cv2.BORDER_CONSTANT, value=255)
+
+        # Step 5: Display
         grid = cv2.hconcat(columns)
         cv2.imshow(window_name, grid)
         cv2.waitKey(1)

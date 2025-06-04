@@ -54,8 +54,8 @@ class BridgeNavigator(Node):
             "Original (Arm RGB)": np.zeros((240, 320, 3), dtype=np.uint8),
             "Hue Channel": np.zeros((240, 320), dtype=np.uint8),
             "Binary (Otsu on Hue)": np.zeros((240, 320), dtype=np.uint8),
-            "After Closing": np.zeros((240, 320), dtype=np.uint8),
-            "Canny Edges": np.zeros((240, 320), dtype=np.uint8),
+            "Harris Corners": np.zeros((240, 320), dtype=np.uint8),
+            "Connected Lines": np.zeros((240, 320, 3), dtype=np.uint8),
             "Fitted Guardrails": np.zeros((240, 320, 3), dtype=np.uint8),
             "Red X Detection": np.zeros((240, 320, 3), dtype=np.uint8)
         }
@@ -64,7 +64,7 @@ class BridgeNavigator(Node):
 
         self.get_logger().info("Bridge mover started")
 
-        #development variables - disable on final version
+        # development variables - disable on final version
         self.state_override = False
         #self.arm_command_pub = self.create_publisher(String, "/arm_command", 10)
         #self.initial_pose_timer = self.create_timer(3, self.publish_initial_command)
@@ -317,18 +317,13 @@ class BridgeNavigator(Node):
             hue = hsv[:, :, 0]
             blurred = cv2.GaussianBlur(hue, (5, 5), 0)
             _, binary = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-            binary = cv2.bitwise_not(binary)
-            SE_closing = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (25, 25))
-            pad = 40
-            binary_padded = cv2.copyMakeBorder(binary, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=0)
-            closed_padded = cv2.morphologyEx(binary_padded, cv2.MORPH_CLOSE, SE_closing)
-            closed = closed_padded[pad:-pad, pad:-pad]
+            binary = cv2.bitwise_not(binary)  # Otsu binary
 
             k = 20
-            detected_end_of_bridge = np.all(closed[:k, :] == 255)
-            #detected shift between water bridge and grass island
+            detected_end_of_bridge = np.all(binary[:k, :] == 255)
+            # detected shift between water bridge and grass island
             if detected_end_of_bridge:
-                height, width = closed.shape
+                height, width = binary.shape
                 center_point = (width // 2, height // 3)
                 direction_normal_2d = np.array([0, 1], dtype=np.float32)
                 forward_image_viz = img_bgr.copy()
@@ -348,7 +343,7 @@ class BridgeNavigator(Node):
                 return
 
             # --- Red X Detection and Visualization ---
-            red_x_found, red_x_center, x_viz, otsu_viz_x = self.detect_red_x_on_ground(closed, img_bgr)
+            red_x_found, red_x_center, x_viz, otsu_viz_x = self.detect_red_x_on_ground(binary, img_bgr)
             self.display_dict["Red X Detection"] = x_viz
             self.display_dict["Red X Otsu"] = otsu_viz_x
             if red_x_found:
@@ -362,23 +357,96 @@ class BridgeNavigator(Node):
                 self.publish_map_point(map_point, orientation, is_final_pose=True)
                 return
 
-            edges = cv2.Canny(closed, 50, 150)
-            height, width = closed.shape
+            # Guideline generation
+            edges = cv2.Canny(binary, 50, 150)
+            gray = np.float32(edges)
+            block_size = 7
+            ksize = 5
+            k = 0.18
+            harris_response = cv2.cornerHarris(gray, block_size, ksize, k)
+
+            harris_response = cv2.dilate(harris_response, None, iterations=5)
+            threshold = 0.001 * harris_response.max()
+            corners = (harris_response > threshold).astype(np.uint8) * 255
+
+            harris_viz = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
+            harris_viz[corners > 0] = [0, 0, 255]
+
+            height, width = binary.shape
             line_vis = img_bgr.copy()
             self.display_dict["Original (Arm RGB)"] = img_bgr
             self.display_dict["Hue Channel"] = hue
             self.display_dict["Binary (Otsu on Hue)"] = binary
-            self.display_dict["After Closing"] = closed
-            self.display_dict["Canny Edges"] = edges
+            self.display_dict['Harris Corners'] = harris_viz
 
+            # --- Step 1: Get original component labels BEFORE removing corners ---
+            num_labels_before, labels_before, _, _ = cv2.connectedComponentsWithStats(edges, connectivity=8)
+            labels_original = labels_before.copy()  # for reference after corner removal
+
+            # --- Step 2: Remove corners from edges ---
+
+            k = corners.shape[0] // 3 
+            mask = np.zeros_like(edges, dtype=bool)
+            mask[:k, :] = corners[:k, :] > 0
+            edges[mask] = 0
+
+            n = 4
+            ratio_limit = 0.85
+
+            top_block = binary[:n, :]
+            bottom_block = binary[-n:, :]
+            top_ratio = np.mean(top_block == 255)
+            bottom_ratio = np.mean(bottom_block == 255)
+
+            if top_ratio >= ratio_limit or bottom_ratio >= ratio_limit:
+                edges[corners > 0] = 0
+
+            # --- Step 3: Connected components AFTER removing corners ---
             num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(edges, connectivity=8)
             if (num_labels - 1 < 2):
+                # Not enough components to show two largest
                 self.display_image_grid(self.display_dict)
                 return
-            min_pixels = 40
+
+            # --- Step 4: Collect sizes of new components ---
+            component_sizes = []
+            for label in range(1, num_labels):  # skip background
+                size = np.count_nonzero(labels == label)
+                component_sizes.append((label, size))
+
+            # --- Step 5: Sort by size and pick top 2 components ---
+            largest_components = sorted(component_sizes, key=lambda x: -x[1])[:2]
+            largest_labels = [label for label, _ in largest_components]
+
+            # --- New: Create visualization of the two largest connected components ---
+            connected_vis = np.zeros((height, width, 3), dtype=np.uint8)
+            colors = [(0, 0, 255), (0, 0, 255)]
+            for idx, lbl in enumerate(largest_labels):
+                mask = (labels == lbl)
+                connected_vis[mask] = colors[idx]
+            self.display_dict["Connected Lines"] = connected_vis
+
+            # --- Step 6: Check if both came from the same original label ---
+            original_label_set = set()
+            for new_label in largest_labels:
+                mask = (labels == new_label)
+                original_labels = labels_original[mask]
+                unique_labels = set(np.unique(original_labels))
+                unique_labels.discard(0)  # remove background
+                if unique_labels:
+                    original_label_set.update(unique_labels)
+
+            if len(original_label_set) < len(largest_labels):
+                # At least two largest new components came from same original component
+                self.display_image_grid(self.display_dict)
+                return
+
+            # --- Step 7: Process valid components ---
+            min_pixels = 200
             segment_size = 60
             all_lines = []
-            for label in range(1, num_labels):
+
+            for label in largest_labels:
                 mask = (labels == label).astype(np.uint8)
                 ys, xs = np.nonzero(mask)
                 if len(xs) < min_pixels:
@@ -387,10 +455,12 @@ class BridgeNavigator(Node):
                 sorted_indices = np.argsort(points[:, 0, 1])
                 sorted_points = points[sorted_indices][:, 0, :]
                 num_segments = len(sorted_points) // segment_size
+
                 for i in range(num_segments):
                     segment = sorted_points[i * segment_size: (i + 1) * segment_size]
                     if len(segment) < 2:
                         continue
+
                     segment_pts = segment.astype(np.float32).reshape(-1, 1, 2)
                     [vx, vy, x0, y0] = cv2.fitLine(segment_pts, cv2.DIST_L2, 0, 0.01, 0.01)
                     pt1 = tuple(segment[0].astype(int))
@@ -408,6 +478,7 @@ class BridgeNavigator(Node):
                         "color": color,
                         "edge_label": label
                     })
+
             if all_lines:
                 image_center_x = width // 2
                 angle_thresh_deg = 60.0
@@ -442,30 +513,49 @@ class BridgeNavigator(Node):
                         valid_pairs.append((l, r))
                         used_left.add(id(l))
                         used_right.add(id(r))
-                for idx, (l, r) in enumerate(valid_pairs):
+                
+
+                max_angle_jump_deg = 35.0
+                filtered_pairs = []
+                last_vec = None
+
+                for (l, r) in valid_pairs:
+                    l_vec = np.array([l["pt2"][0] - l["pt1"][0], l["pt2"][1] - l["pt1"][1]], dtype=np.float32)
+                    r_vec = np.array([r["pt2"][0] - r["pt1"][0], r["pt2"][1] - r["pt1"][1]], dtype=np.float32)
+
+                    l_dir = l_vec / (np.linalg.norm(l_vec) + 1e-6)
+                    r_dir = r_vec / (np.linalg.norm(r_vec) + 1e-6)
+                    avg_dir = (l_dir + r_dir) / 2.0
+                    avg_dir /= (np.linalg.norm(avg_dir) + 1e-6)
+
+                    if last_vec is not None:
+                        dot = np.clip(np.dot(avg_dir, last_vec), -1.0, 1.0)
+                        angle_diff = math.degrees(np.arccos(dot))
+                        if angle_diff > max_angle_jump_deg:
+                            break
+
+                    filtered_pairs.append((l, r, avg_dir))
+                    last_vec = avg_dir
+
+                for idx, (l, r, direction_normal_2d) in enumerate(filtered_pairs):
                     pair_color = tuple(random.randint(100, 255) for _ in range(3))
                     cv2.line(line_vis, l["pt1"], l["pt2"], pair_color, 3)
                     cv2.line(line_vis, r["pt1"], r["pt2"], pair_color, 3)
+
                     midpoint = np.array([
                         (l["center"][0] + r["center"][0]) // 2,
                         (l["center"][1] + r["center"][1]) // 2
                     ], dtype=np.int32)
-                    l_vec = np.array([l["pt2"][0] - l["pt1"][0], l["pt2"][1] - l["pt1"][1]], dtype=np.float32)
-                    r_vec = np.array([r["pt2"][0] - r["pt1"][0], r["pt2"][1] - r["pt1"][1]], dtype=np.float32)
-                    l_dir = l_vec / (np.linalg.norm(l_vec) + 1e-6)
-                    r_dir = r_vec / (np.linalg.norm(r_vec) + 1e-6)
-                    direction_normal_2d = (l_dir + r_dir) / 2.0
-                    direction_normal_2d /= (np.linalg.norm(direction_normal_2d) + 1e-6)
+
                     arrow_length = 50
                     direction = (midpoint + (direction_normal_2d * -arrow_length)).astype(int)
                     cv2.arrowedLine(line_vis, tuple(midpoint), tuple(direction), (255, 255, 0), 3, tipLength=0.2)
                     cv2.circle(line_vis, tuple(midpoint), 5, (255, 0, 255), -1)
-                    if idx == len(valid_pairs) - 1:
 
+                    if idx == len(filtered_pairs) - 1:
                         map_point, orientation = self.transform_image_point_to_map(midpoint, direction_normal_2d)
                         if map_point is None or orientation is None:
                             return
-
                         self.publish_map_point(map_point, orientation, is_final_pose=False)
 
             self.display_dict["Fitted Guardrails"] = line_vis
