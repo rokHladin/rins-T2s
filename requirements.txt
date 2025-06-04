@@ -1,3 +1,6 @@
 numpy==1.23.5
-thinc==8.3.4
-pyaudio
+ultralytics
+transformers
+pyttsx3
+SpeechRecognition
+PyAudio
