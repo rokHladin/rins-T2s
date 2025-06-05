@@ -1,0 +1,162 @@
+\documentclass[a4paper]{article}
+
+% Input and Output Encoding, Fonts
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{babel}
+
+\usepackage{lmodern}
+\usepackage{microtype}
+
+% Captions and Plots
+\usepackage{caption}
+\usepackage{subcaption}
+
+\usepackage{pgf-pie}
+
+% TODO notes
+\usepackage{todonotes}
+
+% Title page package
+\usepackage{uni-titlepage}
+
+% Utilities
+\usepackage[autostyle=false]{csquotes}
+\usepackage{biblatex}
+\usepackage[unicode, pdfusetitle]{hyperref}
+
+% Math packages
+\usepackage{amsmath}
+\usepackage{amssymb}
+
+% Graphics
+\usepackage{graphicx}
+
+% Code listings
+\usepackage{listings}
+\usepackage{xcolor}
+
+% Configure listings for Python
+\lstset{
+    language=Python,
+    basicstyle=\ttfamily\small,
+    keywordstyle=\color{blue},
+    commentstyle=\color{green!50!black},
+    stringstyle=\color{red},
+    numbers=left,
+    numberstyle=\tiny,
+    frame=single,
+    breaklines=true,
+    showstringspaces=false,
+    tabsize=4
+}
+
+\title{Intelligent Bird Detection and Classification System}
+\author{
+\textbf{Team Pi:}\\
+Maj Bregar\\
+Rok Hladin\\
+Matjaž Pogačnik
+}
+\date{June 2025}
+
+\TitlePageStyle[
+    subject=project,
+    subtitle={Development of Intelligent Systems - Task T2s},
+    publisher={
+        \textbf{Mentor:} prof.\ dr.\ Danijel Skočaj\\
+        Faculty of Computer and Information Science\\
+        University of Ljubljana
+    },
+]{KOMAScript}
+
+\addbibresource{literature.bib}
+
+\begin{document}
+
+\maketitle
+
+\newpage
+\tableofcontents
+\listoffigures
+\newpage
+
+\section{Introduction}
+
+The Task T2s challenge required our robot to navigate a simulated environment and perform advanced bird detection, classification, and interaction tasks. This task built upon the foundation of Task T1, incorporating additional complexity through specialized bird recognition capabilities and enhanced navigation requirements.
+
+The primary objectives of our intelligent system included:
+
+\begin{itemize}
+\item \textbf{Autonomous Navigation and Exploration:} Navigate through the simulated environment autonomously, creating and updating maps using SLAM (Simultaneous Localization and Mapping) while avoiding obstacles and planning optimal paths.
+
+\item \textbf{Face Detection and Human Interaction:} Identify and locate human faces, determine gender, and engage in meaningful dialogue which encorporates previously gathered information about the environment.
+
+\item \textbf{Bird Detection and Classification:} Detect and classify 24 different bird species using computer vision and machine learning techniques, locate them and generate report of all found birds. 
+
+
+\item \textbf{Ring Detection and Recognition:} Detect colored rings in the environment and use them for navigation waypoints for finding the approximate location of each bird.
+
+\item \textbf{Bridge Navigation:} Safely traverse bridge structures within the simulation environment, requiring precise control and spatial awareness.
+
+\item \textbf{Data Recording and Management:} Systematically record and store information about detected birds, their locations, and classification results for task completion verification.
+
+\end{itemize}
+Our team, "Pi," focused on developing modular solutions for each sub-problem and integrating them into a cohesive system using the Robot Operating System (ROS). This report outlines the methods employed, the implementation details, the performance of our system, the division of work among team members, and concludes with a discussion of the challenges faced and lessons learned.
+
+\section{Methods}
+This section describes the theoretical underpinnings of the core methods used in our system.
+
+\subsection{YOLO for Real-time Object Detection}
+\label{sec:yolo}
+
+YOLO (You Only Look Once) provides the foundation for our real-time bird and face detection system. This single-stage object detector frames detection as a regression problem, predicting bounding boxes and class probabilities simultaneously.
+
+YOLO divides input images into an $S \times S$ grid, where each cell predicts $B$ bounding boxes and confidence scores. The confidence score is defined as:
+\[
+\text{Confidence} = P(\text{Object}) \times \text{IOU}_{\text{pred}}^{\text{truth}}
+\]
+
+Each bounding box consists of 5 predictions: $x$, $y$, $w$, $h$, and confidence, where $(x,y)$ represents the center coordinates relative to the grid cell, and $(w,h)$ represents the width and height relative to the image.
+
+The loss function combines localization, confidence, and classification losses:
+\[
+\mathcal{L} = \lambda_{\text{coord}} \mathcal{L}_{\text{loc}} + \mathcal{L}_{\text{conf}} + \lambda_{\text{noobj}} \mathcal{L}_{\text{noobj}} + \mathcal{L}_{\text{class}}
+\]
+
+\subsection{Autonomous Navigation}
+Autonomous navigation is crucial for the robot to explore the environment and reach designated points of interest. Our approach typically involves:
+\begin{itemize}
+    \item \textbf{Mapping:} Utilizing SLAM (Simultaneous Localization and Mapping) techniques, such as GMapping, to build a 2D occupancy grid map of the simulated environment as the robot explores.
+    \item \textbf{Path Planning:} Employing graph-based search algorithms like A* (A-star) or Dijkstra's algorithm on the generated map to find optimal paths between the robot's current position and target locations. Obstacles recorded in the occupancy grid are considered to ensure collision-free paths.
+    \item \textbf{Exploration Strategy:} To ensure comprehensive coverage of the environment, an exploration strategy might be used. This could involve frontier-based exploration, where the robot navigates to the boundaries between known and unknown space. Alternatively, a technique inspired by skeletonization (adapted for 2D map exploration) can simplify the map into a graph of traversable pathways, with key points (e.g., intersections detected using methods analogous to Harris corners) serving as waypoints.
+    \item \textbf{Localization:} Continuous localization using methods like AMCL (Adaptive Monte Carlo Localization) is essential to track the robot's pose within the map accurately.
+\end{itemize}
+The `navigator.py` script encapsulates these functionalities.
+
+\subsection{Bird Detection and Classification}
+The task required detecting and classifying multiple bird species.
+\begin{itemize}
+    \item \textbf{Initial Bird Detection (Candidate Finding):} We use a YOLOv8n (You Only Look Once) model \cite{Redmon2016}, specifically \texttt{model/bird\_yolov8n.pt}, to perform fast detection of general "bird" candidates in the robot's camera feed. Input RGB images can be pre-filtered using depth information to focus on closer objects. This stage helps in identifying potential locations of birds for closer inspection.
+    \item \textbf{Species Classification and Confirmation:} Once the robot is closer to a potential bird candidate (triggered by a state change, e.g., "ARRIVED\_AT\_BIRD"), the region of interest identified by YOLO is cropped from the RGB image. This crop is then passed to a ResNet18 convolutional neural network, specifically \texttt{model/bird\_species\_resnet18.pt}, which is trained to classify the bird into one of 24 distinct species. The 3D position of the confirmed bird is determined using the associated point cloud data.
+    TODO: add scheme of CNN?
+\end{itemize}
+
+\subsection{Ring Detection}
+Detecting rings involved a combination of image processing techniques:
+\begin{itemize}
+    \item \textbf{Image Preprocessing:} The input RGBD image is first separated to color image and depth image. To enhance contrast and facilitate edge detection, methods like Otsu's thresholding can be applied to binarize the image. Gaussian blur is often used to reduce noise.
+    \item \textbf{Edge Detection:} The Canny edge detector is employed to find prominent edges in the preprocessed image, which are likely to form the boundaries of the rings.
+    \item \textbf{Shape Detection:}
+        \begin{itemize}
+            \item \textbf{Edge Removal}: When we have image of edges, corners are removed by first detecting corners with Harris corner detector and removing those regions. This step is needed, because some birds are quite near the rings and can be treated as part of the same edge as a ring.
+            \item \textbf{Contour and ellipse fitting:} After edge detection, contours are extracted and ellipses are fitted to those contours which become ring candidates.
+            \item \textbf{Candidates filtering}: These ring candidates are then filtered based on geometric properties (area, circularity, aspect ratio, angle difference) to identify potential ring shapes. Program iterates through each pair of ring candidates and checks if one is completely inside another and if they are similar shapes.
+            \item \textbf{Checking 3D structure}: Task was to distinguish between 3D rings in the air and rings drawn on boxes. This is done by taking enough sample points on the ring and comparing it to the sample points points inside the ring. If points inside are farther enough, ring is confirmed to be a 3D ring.
+        \end{itemize}
+    \item \textbf{Color Detection:} Once a ring candidate is identified, the region within the ring in the original RGB image is analyzed to determine its color. This can be done by averaging pixel values in the HSV color space and mapping them to predefined color categories.
+\end{itemize}
+The \texttt{ring\_detector.py} script is responsible for these operations.
+
+\printbibliography
+\end{document}
