@@ -22,6 +22,7 @@ import tf2_ros
 import tf2_geometry_msgs
 
 from scipy.ndimage import gaussian_filter1d
+from message_filters import Subscriber, ApproximateTimeSynchronizer
 
 class BridgeNavigator(Node):
     def __init__(self):
@@ -32,11 +33,11 @@ class BridgeNavigator(Node):
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
-        # Subscriptions
-        self.sub_rgb = self.create_subscription(Image, "/oakd/rgb/preview/image_raw", self.rgb_callback, qos_profile_sensor_data)
-        self.sub_arm_cam = self.create_subscription(Image, "/top_camera/rgb/preview/image_raw", self.arm_rgb_callback, qos_profile_sensor_data)
-        self.sub_arm_depth = self.create_subscription(Image, "/top_camera/rgb/preview/depth", self.arm_depth_callback, qos_profile_sensor_data)
-        self.sub_arm_pointcloud = self.create_subscription(PointCloud2, "/top_camera/rgb/preview/depth/points", self.pc_callback, qos_profile_sensor_data)
+        # Synced subscriptions
+        self.rgb_sub = Subscriber(self, Image, "/top_camera/rgb/preview/image_raw", qos_profile=qos_profile_sensor_data)
+        self.pc_sub = Subscriber(self, PointCloud2, "/top_camera/rgb/preview/depth/points", qos_profile=qos_profile_sensor_data)
+        self.ts = ApproximateTimeSynchronizer([self.rgb_sub, self.pc_sub], queue_size=15, slop=0.05)
+        self.ts.registerCallback(self.synced_callback)
 
         self.pub_bridge_pose = self.create_publisher(BridgePose, "/bridge_pose_map", 10)
         self.latest_pointcloud = None
@@ -49,7 +50,6 @@ class BridgeNavigator(Node):
         )
         self.robot_state = None
 
-
         self.display_dict = {
             "Original (Arm RGB)": np.zeros((240, 320, 3), dtype=np.uint8),
             "Hue Channel": np.zeros((240, 320), dtype=np.uint8),
@@ -61,14 +61,12 @@ class BridgeNavigator(Node):
         }
 
         self.red_hist_ref = self.generate_wrapped_gaussian(center=0, std_dev=8)
-
         self.get_logger().info("Bridge mover started")
-
-        # development variables - disable on final version
         self.state_override = False
-        #self.arm_command_pub = self.create_publisher(String, "/arm_command", 10)
-        #self.initial_pose_timer = self.create_timer(3, self.publish_initial_command)
 
+    def synced_callback(self, rgb_msg, pc_msg):
+        self.latest_pointcloud = pc_msg
+        self.arm_rgb_callback(rgb_msg)
 
     # --- Histogram Helpers as Class Methods ---
     def generate_wrapped_gaussian(self, center, std_dev=8, normalize=True):
@@ -99,6 +97,11 @@ class BridgeNavigator(Node):
 
     # --- Red X Detection with Visualization ---
     def detect_red_x_on_ground(self, closed, img_bgr, area_threshold=1520, color_prob_threshold=0.75, erosion_iters=1):
+
+        min_binary_pixels = 40000
+        if cv2.countNonZero(closed) < min_binary_pixels:
+            return False, (0, 0), img_bgr.copy(), img_bgr.copy()
+
 
         se_erosion = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
         closed = cv2.erode(closed, se_erosion, iterations=erosion_iters)
@@ -258,12 +261,6 @@ class BridgeNavigator(Node):
         grid = cv2.hconcat(columns)
         cv2.imshow(window_name, grid)
         cv2.waitKey(1)
-
-    def rgb_callback(self, msg):
-        try:
-            img = self.bridge.imgmsg_to_cv2(msg, "bgr8")
-        except Exception:
-            return
 
     def publish_map_point(self, map_point, orientation, is_final_pose):
         pose_msg = BridgePose()
@@ -563,8 +560,6 @@ class BridgeNavigator(Node):
         except Exception as e:
             self.get_logger().warn(f"Exception during bridge detection: {e}")
 
-    def arm_depth_callback(self, msg):
-        return
 
 def main(args=None):
     rclpy.init(args=args)
