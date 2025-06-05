@@ -18,6 +18,7 @@ import subprocess
 import json
 import importlib.resources
 import os
+import tempfile
 from std_msgs.msg import ColorRGBA, String
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
@@ -34,8 +35,21 @@ from dis_tutorial3.msg import BridgePose
 
 from geometry_msgs.msg import PoseWithCovarianceStamped
 
-import pyttsx3
-from pyttsx3.engine import Engine
+# TTS imports with fallback
+try:
+    import pyttsx3
+    PYTTSX3_AVAILABLE = True
+except Exception as e:
+    print(f"pyttsx3 not available: {e}")
+    PYTTSX3_AVAILABLE = False
+
+try:
+    from gtts import gTTS
+    import pygame
+    GTTS_AVAILABLE = True
+except ImportError as e:
+    print(f"gTTS or pygame not available: {e}")
+    GTTS_AVAILABLE = False
 
 from enum import Enum, auto
 
@@ -173,11 +187,39 @@ class InspectionNavigator(Node):
         self.moving_to_brige_pose = None
 
         #start up everything
-        self.tts_engine = pyttsx3.init()
+        self._init_tts()
         self.cmdr = RobotCommander()
 
         loop_update_delay_seconds = 0.3
         self.timer = self.create_timer(loop_update_delay_seconds, self.robot_state_loop)
+
+    def _init_tts(self):
+        """Initialize TTS with fallback from pyttsx3 to gTTS"""
+        self.tts_engine = None
+        self.use_gtts = False
+        
+        # Try pyttsx3 first
+        if PYTTSX3_AVAILABLE:
+            try:
+                self.tts_engine = pyttsx3.init()
+                self.tts_engine.setProperty('rate', 120)
+                self.tts_engine.setProperty('volume', 0.6)
+                self.get_logger().info("✅ Using pyttsx3 for TTS")
+                return
+            except Exception as e:
+                self.get_logger().warn(f"⚠️ pyttsx3 failed: {e}")
+        
+        # Fallback to gTTS
+        if GTTS_AVAILABLE:
+            try:
+                pygame.mixer.init()
+                self.use_gtts = True
+                self.get_logger().info("✅ Using gTTS for TTS")
+                return
+            except Exception as e:
+                self.get_logger().warn(f"⚠️ gTTS/pygame failed: {e}")
+        
+        self.get_logger().warn("❌ No working TTS engine found")
 
     def publish_robot_state(self):
         msg = String()
@@ -428,11 +470,24 @@ class InspectionNavigator(Node):
         return transforms3d.euler.quat2euler([q.w, q.x, q.y, q.z])[2]
 
     def speak(self, text):
-        self.tts_engine.setProperty('rate', 120)
-        self.tts_engine.setProperty('volume', 0.6)
-        self.tts_engine.say(text)
-        self.tts_engine.runAndWait()
-        time.sleep(0.2) 
+        try:
+            if self.tts_engine and not self.use_gtts:
+                # Use pyttsx3
+                self.tts_engine.say(text)
+                self.tts_engine.runAndWait()
+            elif self.use_gtts:
+                # Use gTTS
+                tts = gTTS(text=text, lang='en')
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as tmp_file:
+                    tts.save(tmp_file.name)
+                    pygame.mixer.music.load(tmp_file.name)
+                    pygame.mixer.music.play()
+                    while pygame.mixer.music.get_busy():
+                        time.sleep(0.1)
+                    os.unlink(tmp_file.name)
+            time.sleep(0.2)
+        except Exception as e:
+            self.get_logger().error(f"TTS error: {e}")
 
     def bridge_pose_callback(self, msg: BridgePose):
         x = msg.pose.position.x

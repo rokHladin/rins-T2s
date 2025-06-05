@@ -3,7 +3,6 @@ from tkinter.scrolledtext import ScrolledText
 import threading
 import queue
 import spacy
-import pyttsx3
 import speech_recognition as sr
 from enum import Enum
 from typing import Optional
@@ -15,6 +14,24 @@ except ImportError:
     print("PyAudio not available - microphone device selection will be limited")
 import traceback
 import time
+import os
+import tempfile
+
+# TTS imports with fallback
+try:
+    import pyttsx3
+    PYTTSX3_AVAILABLE = True
+except Exception as e:
+    print(f"pyttsx3 not available: {e}")
+    PYTTSX3_AVAILABLE = False
+
+try:
+    from gtts import gTTS
+    import pygame
+    GTTS_AVAILABLE = True
+except ImportError as e:
+    print(f"gTTS or pygame not available: {e}")
+    GTTS_AVAILABLE = False
 
 BIRD_SPECIES = [
     "Laysan Albatross", "Yellow headed Blackbird", "Indigo Bunting", "Pelagic Cormorant",
@@ -213,13 +230,34 @@ class SpeechGUI:
     def __init__(self, gui: ChatboxGUI, enable_tts=True):
         self.gui = gui
         self.enable_tts = enable_tts
-        try:
-            self.engine = pyttsx3.init()
-            self.engine.setProperty('rate', 150)
-            self.engine.setProperty('volume', 0.9)
-        except Exception:
-            self.engine = None
+        self.tts_engine = None
+        self.use_gtts = False
+        
+        # Try to initialize pyttsx3 first
+        if PYTTSX3_AVAILABLE:
+            try:
+                self.tts_engine = pyttsx3.init()
+                self.tts_engine.setProperty('rate', 150)
+                self.tts_engine.setProperty('volume', 0.9)
+                self.gui.display("✅ Using pyttsx3 for TTS")
+            except Exception as e:
+                self.gui.display(f"⚠️ pyttsx3 failed: {e}")
+                self.tts_engine = None
+        
+        # Fallback to gTTS if pyttsx3 failed
+        if self.tts_engine is None and GTTS_AVAILABLE:
+            try:
+                pygame.mixer.init()
+                self.use_gtts = True
+                self.gui.display("✅ Using gTTS for TTS")
+            except Exception as e:
+                self.gui.display(f"⚠️ gTTS/pygame failed: {e}")
+                self.enable_tts = False
+        
+        if not self.enable_tts or (self.tts_engine is None and not self.use_gtts):
+            self.gui.display("❌ TTS disabled - no working TTS engine found")
             self.enable_tts = False
+            
         try:
             self.nlp = spacy.load("en_core_web_sm")
         except OSError:
@@ -232,20 +270,34 @@ class SpeechGUI:
 
     def speak(self, text: str, wait=False):
         self.gui.display(f"Robot Golob: {text}")
-        if self.enable_tts and self.engine:
-            def tts_job():
-                try:
-                    self.engine.say(text + " .")
-                    self.engine.runAndWait()
-                    time.sleep(0.8)
-                except Exception:
-                    pass
+        if not self.enable_tts:
+            return
+            
+        def tts_job():
+            try:
+                if self.tts_engine and not self.use_gtts:
+                    # Use pyttsx3
+                    self.tts_engine.say(text + " .")
+                    self.tts_engine.runAndWait()
+                elif self.use_gtts:
+                    # Use gTTS
+                    tts = gTTS(text=text, lang='en')
+                    with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as tmp_file:
+                        tts.save(tmp_file.name)
+                        pygame.mixer.music.load(tmp_file.name)
+                        pygame.mixer.music.play()
+                        while pygame.mixer.music.get_busy():
+                            time.sleep(0.1)
+                        os.unlink(tmp_file.name)
+                time.sleep(0.8)
+            except Exception as e:
+                print(f"TTS error: {e}")
 
-            if wait:
-                tts_job()
-            else:
-                t = threading.Thread(target=tts_job, daemon=True)
-                t.start()
+        if wait:
+            tts_job()
+        else:
+            t = threading.Thread(target=tts_job, daemon=True)
+            t.start()
 
 
 class BirdDialogue:
@@ -435,6 +487,7 @@ def run_bird_dialogue_gui(gender: Gender, rings, birds, tts=True):
         if favorite_bird:
             result_line = f"Hope that helps"
             speech_system.speak(result_line, wait=True)
+            time.sleep(2)  # Add a delay before exiting
             gui.on_exit()
         else:
             result_line = f"I'm sorry I could not find your bird. Sad Sad"
