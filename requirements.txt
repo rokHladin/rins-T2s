@@ -4,3 +4,5 @@ transformers
 pyttsx3
 SpeechRecognition
 PyAudio
+Pillow==11.2.1
+spacy

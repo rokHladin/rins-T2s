@@ -7,7 +7,12 @@ import pyttsx3
 import speech_recognition as sr
 from enum import Enum
 from typing import Optional
-import pyaudio
+try:
+    import pyaudio
+    PYAUDIO_AVAILABLE = True
+except ImportError:
+    PYAUDIO_AVAILABLE = False
+    print("PyAudio not available - microphone device selection will be limited")
 import traceback
 import time
 
@@ -381,30 +386,43 @@ def run_bird_dialogue_gui(gender: Gender, rings, birds, tts=True):
     #gui.display(f"\n{rings}\n")
 
 
-    # List input devices in GUI, let user pick synchronously in main thread
+    # Automatically select pulse audio device
     p = pyaudio.PyAudio()
     devices_info = [p.get_device_info_by_index(i) for i in range(p.get_device_count())]
-    gui.display("Available input devices:\n")
-    input_indexes = []
+    
+    # Try to find pulse device first
+    pulse_device = None
     for idx, dev in enumerate(devices_info):
-        if dev.get('maxInputChannels', 0) > 0:
-            gui.display(f"{idx}: {dev.get('name')} (inputs: {dev.get('maxInputChannels',0)})")
-            input_indexes.append(idx)
-    gui.display("\nPlease type the device index to use for the microphone (e.g., 0):")
-    while True:
-        idx = gui.get_user_input_blocking("[Select device index]:")
-        if gui._exiting:
-            return
-        try:
-            idx = int(idx)
-            if idx in input_indexes:
-                gui.selected_device_index = devices_info[idx]['index']
-                gui.display(f"Selected input device: {devices_info[idx]['name']}\n")
-                break
-            else:
-                gui.display("Invalid selection. Please pick an index with inputs > 0.")
-        except Exception:
-            gui.display("Invalid input. Please enter a number.")
+        if dev.get('maxInputChannels', 0) > 0 and 'pulse' in dev.get('name', '').lower():
+            pulse_device = (idx, dev)
+            break
+    
+    if pulse_device:
+        gui.selected_device_index = pulse_device[1]['index']
+        gui.display(f"Automatically selected audio device: {pulse_device[1]['name']}\n")
+    else:
+        # Fallback to manual selection if pulse not found
+        gui.display("Available input devices:\n")
+        input_indexes = []
+        for idx, dev in enumerate(devices_info):
+            if dev.get('maxInputChannels', 0) > 0:
+                gui.display(f"{idx}: {dev.get('name')} (inputs: {dev.get('maxInputChannels',0)})")
+                input_indexes.append(idx)
+        gui.display("\nPulse audio device not found. Please type the device index to use for the microphone (e.g., 0):")
+        while True:
+            idx = gui.get_user_input_blocking("[Select device index]:")
+            if gui._exiting:
+                return
+            try:
+                idx = int(idx)
+                if idx in input_indexes:
+                    gui.selected_device_index = devices_info[idx]['index']
+                    gui.display(f"Selected input device: {devices_info[idx]['name']}\n")
+                    break
+                else:
+                    gui.display("Invalid selection. Please pick an index with inputs > 0.")
+            except Exception:
+                gui.display("Invalid input. Please enter a number.")
 
     speech_system = SpeechGUI(gui, enable_tts=tts)
     dialogue = BirdDialogue(speech_system, rings, birds)
@@ -417,6 +435,7 @@ def run_bird_dialogue_gui(gender: Gender, rings, birds, tts=True):
         if favorite_bird:
             result_line = f"Hope that helps"
             speech_system.speak(result_line, wait=True)
+            gui.on_exit()
         else:
             result_line = f"I'm sorry I could not find your bird. Sad Sad"
             speech_system.speak(result_line, wait=True)
@@ -461,27 +480,27 @@ if __name__ == "__main__":
         1.590181588663573,
         -0.09557064972333207
       ],
-      "vermilion_flycatcher"
+      "common_tern"
     ],
     [
       [
         0.31328273467670054,
         2.9082087064620423
       ],
-      "baltimore_oriole"
+      "american_crow"
     ],
     [
       [
         -3.089599968849342,
         5.079807535806343
       ],
-      "blue_jay"
+      "yellow_headed_blackbird"
     ],
     [
       [
         -3.930048542368185,
         2.3905216597116237
       ],
-      "horned_puffin"
+      "pied_kingfisher"
     ]
   ])

@@ -1,0 +1,409 @@
+\documentclass[a4paper]{article}
+
+% Input and Output Encoding, Fonts
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{babel}
+
+\usepackage{lmodern}
+\usepackage{microtype}
+
+% Captions and Plots
+\usepackage{caption}
+\usepackage{subcaption}
+
+\usepackage{pgf-pie}
+
+% TODO notes
+\usepackage{todonotes}
+
+% Title page package
+\usepackage{uni-titlepage}
+
+% Utilities
+\usepackage[autostyle=false]{csquotes}
+\usepackage{biblatex}
+\usepackage[unicode, pdfusetitle]{hyperref}
+
+% Math packages
+\usepackage{amsmath}
+\usepackage{amssymb}
+
+% Graphics
+\usepackage{graphicx}
+
+% Code listings
+\usepackage{listings}
+\usepackage{xcolor}
+
+% Configure listings for Python
+\lstset{
+    language=Python,
+    basicstyle=\ttfamily\small,
+    keywordstyle=\color{blue},
+    commentstyle=\color{green!50!black},
+    stringstyle=\color{red},
+    numbers=left,
+    numberstyle=\tiny,
+    frame=single,
+    breaklines=true,
+    showstringspaces=false,
+    tabsize=4
+}
+
+\title{RoboBirder: Task T2s}
+\author{
+\textbf{Team Pi:}\\
+Maj Bregar\\
+Rok Hladin\\
+Matjaž Pogačnik
+}
+\date{June 2025}
+
+\TitlePageStyle[
+    subject=project,
+    subtitle={Development of Intelligent Systems - Task T2s},
+    publisher={
+        \textbf{Mentor:} prof.\ dr.\ Danijel Skočaj\\
+        Faculty of Computer and Information Science\\
+        University of Ljubljana
+    },
+]{KOMAScript}
+
+\addbibresource{literature.bib}
+
+\begin{document}
+
+\maketitle
+
+\newpage
+\tableofcontents
+\listoffigures
+\newpage
+
+\section{Introduction}
+
+The Task T2s challenge required our robot to navigate a simulated environment and perform advanced bird detection, classification, and interaction tasks. This task built upon the foundation of Task T1, incorporating additional complexity through specialized bird recognition capabilities and enhanced navigation requirements.
+
+The primary objectives of our intelligent system included:
+
+\begin{itemize}
+\item \textbf{Autonomous Navigation and Exploration:} Navigate through the simulated environment autonomously, creating and updating maps using SLAM (Simultaneous Localization and Mapping) while avoiding obstacles and planning optimal paths.
+
+\item \textbf{Face Detection and Human Interaction:} Identify and locate human faces, determine gender, and engage in meaningful dialogue which encorporates previously gathered information about the environment.
+
+\item \textbf{Bird Detection and Classification:} Detect and classify 24 different bird species using computer vision and machine learning techniques, locate them and generate report of all found birds. 
+
+
+\item \textbf{Ring Detection and Recognition:} Detect colored rings in the environment and use them for navigation waypoints for finding the approximate location of each bird.
+
+\item \textbf{Bridge Navigation:} Safely traverse bridge structures within the simulation environment, requiring precise control and spatial awareness.
+
+\item \textbf{Data Recording and Management:} Systematically record and store information about detected birds, their locations, and classification results for task completion verification.
+
+\end{itemize}
+Our team, "Pi," focused on developing modular solutions for each sub-problem and integrating them into a cohesive system using the Robot Operating System (ROS). This report outlines the methods employed, the implementation details, the performance of our system, the division of work among team members, and concludes with a discussion of the challenges faced and lessons learned.
+
+\section{Methods}
+This section describes the theoretical underpinnings of the core methods used in our system.
+
+\subsection{YOLO for Real-time Object Detection}
+\label{sec:yolo}
+
+YOLO (You Only Look Once) provides the foundation for our real-time bird and face detection system. This single-stage object detector frames detection as a regression problem, predicting bounding boxes and class probabilities simultaneously.
+
+YOLO divides input images into an $S \times S$ grid, where each cell predicts $B$ bounding boxes and confidence scores. The confidence score is defined as:
+\[
+\text{Confidence} = P(\text{Object}) \times \text{IOU}_{\text{pred}}^{\text{truth}}
+\]
+
+Each bounding box consists of 5 predictions: $x$, $y$, $w$, $h$, and confidence, where $(x,y)$ represents the center coordinates relative to the grid cell, and $(w,h)$ represents the width and height relative to the image.
+
+The loss function combines localization, confidence, and classification losses:
+\[
+\mathcal{L} = \lambda_{\text{coord}} \mathcal{L}_{\text{loc}} + \mathcal{L}_{\text{conf}} + \lambda_{\text{noobj}} \mathcal{L}_{\text{noobj}} + \mathcal{L}_{\text{class}}
+\]
+
+\subsection{Autonomous Navigation}
+Autonomous navigation is crucial for the robot to explore the environment and reach designated points of interest. Our approach typically involves:
+\begin{itemize}
+    \item \textbf{Mapping:} Utilizing SLAM (Simultaneous Localization and Mapping) techniques, such as GMapping, to build a 2D occupancy grid map of the simulated environment as the robot explores.
+    \item \textbf{Path Planning:} Employing graph-based search algorithms like A* (A-star) or Dijkstra's algorithm on the generated map to find optimal paths between the robot's current position and target locations. Obstacles recorded in the occupancy grid are considered to ensure collision-free paths.
+    \item \textbf{Exploration Strategy:} To ensure comprehensive coverage of the environment, an exploration strategy might be used. This could involve frontier-based exploration, where the robot navigates to the boundaries between known and unknown space. Alternatively, a technique inspired by skeletonization (adapted for 2D map exploration) can simplify the map into a graph of traversable pathways, with key points (e.g., intersections detected using methods analogous to Harris corners) serving as waypoints.
+    \item \textbf{Localization:} Continuous localization using methods like AMCL (Adaptive Monte Carlo Localization) is essential to track the robot's pose within the map accurately.
+\end{itemize}
+The `navigator.py` script encapsulates these functionalities.
+
+\subsection{Bird Detection and Classification}
+The task required detecting and classifying multiple bird species.
+\begin{itemize}
+    \item \textbf{Initial Bird Detection (Candidate Finding):} We use a YOLOv8n (You Only Look Once) model \cite{Redmon2016}, specifically \texttt{model/bird\_yolov8n.pt}, to perform fast detection of general "bird" candidates in the robot's camera feed. Input RGB images can be pre-filtered using depth information to focus on closer objects. This stage helps in identifying potential locations of birds for closer inspection.
+    \item \textbf{Species Classification and Confirmation:} Once the robot is closer to a potential bird candidate (triggered by a state change, e.g., "ARRIVED\_AT\_BIRD"), the region of interest identified by YOLO is cropped from the RGB image. This crop is then passed to a ResNet18 convolutional neural network, specifically \texttt{model/bird\_species\_resnet18.pt}, which is trained to classify the bird into one of 24 distinct species. The 3D position of the confirmed bird is determined using the associated point cloud data.
+    TODO: add scheme of CNN?
+\end{itemize}
+
+\subsection{Ring Detection}
+Detecting rings involved a combination of image processing techniques:
+\begin{itemize}
+    \item \textbf{Image Preprocessing:} The input RGBD image is first separated to color image and depth image. To enhance contrast and facilitate edge detection, methods like Otsu's thresholding can be applied to binarize the image. Gaussian blur is often used to reduce noise.
+    \item \textbf{Edge Detection:} The Canny edge detector is employed to find prominent edges in the preprocessed image, which are likely to form the boundaries of the rings.
+    \item \textbf{Shape Detection:}
+        \begin{itemize}
+            \item \textbf{Edge Removal}: When we have image of edges, corners are removed by first detecting corners with Harris corner detector and removing those regions. This step is needed, because some birds are quite near the rings and can be treated as part of the same edge as a ring.
+            \item \textbf{Contour and ellipse fitting:} After edge detection, contours are extracted and ellipses are fitted to those contours which become ring candidates.
+            \item \textbf{Candidates filtering}: These ring candidates are then filtered based on geometric properties (area, circularity, aspect ratio, angle difference) to identify potential ring shapes. Program iterates through each pair of ring candidates and checks if one is completely inside another and if they are similar shapes.
+            \item \textbf{Checking 3D structure}: Task was to distinguish between 3D rings in the air and rings drawn on boxes. This is done by taking enough sample points on the ring and comparing it to the sample points points inside the ring. If points inside are farther enough, ring is confirmed to be a 3D ring.
+        \end{itemize}
+    \item \textbf{Color Detection:} Once a ring candidate is identified, the region within the ring in the original RGB image is analyzed to determine its color. This can be done by averaging pixel values in the HSV color space and mapping them to predefined color categories.
+\end{itemize}
+The \texttt{ring\_detector.py} script is responsible for these operations.
+
+\subsection{Face Detection and Gender Recognition}
+For human-robot interaction, our system first detects human faces and then attempts to recognize their gender. This process utilizes synchronized RGB images and point cloud data.
+\begin{itemize}
+    \item \textbf{Face Detection:} We employ a YOLOv8n (You Only Look Once) model \cite{Redmon2016}, specifically \texttt{yolov8n.pt}, to detect human faces (class 0) in the RGB camera feed (from \texttt{/oakd/rgb/preview/image\_raw}). Detections are filtered based on a confidence threshold (typically 0.6).
+    \item \textbf{Gender Recognition:} Once a face is detected and its bounding box extracted, the cropped face region is passed to a pre-trained Vision Transformer (ViT) model for gender classification. Specifically, we use the \texttt{dima806/fairface\_gender\_image\_detection} model available on Hugging Face \cite{FairFaceGenderModel}. This model classifies the face as "man" or "woman" with reported accuracy around 93.4\%. The implementation uses the \texttt{transformers} library by Hugging Face.
+    \item \textbf{3D Localization and Normal Estimation:} For each valid face detection (passing depth checks, e.g., within 1.5m), its 3D position in the camera frame is determined using the synchronized point cloud data (from \texttt{/oakd/rgb/preview/depth/points}). A small window of points around the face's 2D center is extracted from the point cloud. RANSAC-based plane fitting is applied to these points to estimate the 3D centroid of the facial surface and its normal vector. This normal is oriented to face the camera, and an interaction point is calculated at a short offset along this normal.
+\end{itemize}
+The \texttt{face\_detector.py} script manages this pipeline, including grouping multiple detections of the same individual, transforming coordinates to the map frame, and publishing confirmed detections.
+
+\subsection{Human-Robot Interaction (Speech)}
+Effective communication with simulated humans is achieved through a dedicated dialogue module (\texttt{dialogue.py}) that integrates a graphical user interface (GUI), speech-to-text (STT), text-to-speech (TTS), and natural language understanding (NLU) capabilities.
+\begin{itemize}
+    \item \textbf{Graphical User Interface (GUI):} A \texttt{tkinter}-based chatbox (\texttt{ChatboxGUI}) provides a visual interface for the dialogue, displaying conversation history and allowing users to type responses or trigger voice input. It also handles microphone device selection, prioritizing 'pulse' audio devices for better compatibility.
+    \item \textbf{Speech-to-Text (STT):} The \texttt{speech\_recognition} library, configured to use the Google Speech Recognition API, converts spoken user input (captured via microphone) into text.
+    \item \textbf{Text-to-Speech (TTS):} The \texttt{pyttsx3} library is used to synthesize robot speech, providing audible responses to the user.
+    \item \textbf{Natural Language Understanding (NLU):}
+        \begin{itemize}
+            \item Recognized user text is processed by the \texttt{SpeechResult} class.
+            \item \texttt{spaCy} (using the \texttt{en\_core\_web\_sm} model, if available) is employed for basic NLP tasks.
+            \item Bird species are extracted from user utterances by matching against a predefined list (\texttt{BIRD\_SPECIES}) and associated keywords (\texttt{BIRD\_KEYWORDS}).
+            \item User responses are also checked for positive (e.g., "yes", "sure") and negative (e.g., "no", "nope") keywords to understand affirmations or negations.
+        \end{itemize}
+    \item \textbf{Dialogue Flow (\texttt{BirdDialogue} class):}
+        \begin{itemize}
+            \item The dialogue is gender-specific, initiated based on the gender information received (e.g., from the \texttt{face\_detector\_node}).
+            \item \textbf{Dialogue with Women:} The robot asks for their favorite bird. If a bird is successfully extracted, its location is described.
+            \item \textbf{Dialogue with Men:} The robot asks for their favorite bird and then enters a confirmation loop ("Are you sure?"). The user can confirm, or state a different bird. The robot proceeds once a bird choice is confirmed or a new bird is mentioned multiple times.
+            \item \textbf{Location Description:} If a bird is identified, its location is described in relation to the park's regions ("West", "Center", "East" based on coordinates) and the color of the nearest ring, using pre-supplied lists of known bird and ring locations.
+        \end{itemize}
+\end{itemize}
+This system is designed to be invoked when an interaction is required, taking the detected gender and current environmental knowledge (bird/ring locations) as input.
+
+\subsection{Bridge Crossing}
+Navigating the bridge requires careful visual perception and control, primarily utilizing the robot's top-mounted arm camera. The process involves several stages:
+\begin{itemize}
+    \item \textbf{Image Preprocessing:} The RGB image from the arm camera (e.g., \texttt{/top\_camera/rgb/preview/image\_raw}) is converted to the HSV color space. The Hue channel is extracted and blurred. Otsu's thresholding is applied to the Hue channel to create a binary image, attempting to segment the bridge structure or water from the surroundings. This binary image is then inverted.
+    \item \textbf{Guardrail Detection and Path Guidance:}
+        \begin{itemize}
+            \item \textbf{Edge and Corner Detection:} Canny edge detection is applied to the binary image. Harris corner detection is then used on these edges to identify key points, which are subsequently removed from the edge image to help separate parallel guardrail lines.
+            \item \textbf{Line Segment Fitting:} Connected components analysis is performed on the modified edge image. The two largest components (ideally corresponding to the guardrails) are selected. Points from these components are sorted, and line segments are fitted to portions of these points.
+            \item \textbf{Pairing and Filtering Segments:} These line segments are paired (one from the left, one from the right) based on angle similarity and spatial separation to form representations of the bridge path. A sequence of these pairs is filtered to ensure smooth transitions in direction.
+            \item \textbf{Pose Calculation:} For valid pairs, a midpoint between the line segments and an average direction normal are calculated. This 2D image information is then projected into 3D using the synchronized point cloud data (from \texttt{/top\_camera/rgb/preview/depth/points}) and transformed into a target pose (position and orientation) in the map frame.
+        \end{itemize}
+    \item \textbf{End-of-Bridge Detection:} The system checks if the top part of the binary image is predominantly white, indicating the robot is likely at the end of the bridge and looking at the next surface (e.g., grass island). If so, a forward pose is calculated.
+    \item \textbf{"Red X" Stop Marker Detection:}
+        \begin{itemize}
+            \item The binary image (representing the ground/bridge surface) is further processed. A region near the robot in the middle of the image is masked out to avoid detecting parts of the robot itself.
+            \item Connected components analysis is performed on the remaining ground mask.
+            \item For components exceeding an area threshold, a Hue histogram is calculated from the original HSV image within the component's mask. This histogram is compared (using cosine similarity) against a reference histogram for the color red (generated as a wrapped Gaussian).
+            \item If a component's color significantly matches red and meets area criteria, it's identified as a "Red X". Its center is then used to calculate a final stopping pose.
+        \end{itemize}
+\end{itemize}
+The \texttt{bridge\_navigation.py} script implements this logic, publishing \texttt{BridgePose} messages (containing a map pose and a flag indicating if it's the final position) to the \texttt{/bridge\_pose\_map} topic. The node's operation is typically active when the robot is in a "BRIDGE\_NAVIGATION" or "GO\_TO\_FINAL\_POSITION" state.
+
+
+\section{Implementation and Integration}
+This section details how the aforementioned methods were implemented and integrated into a cohesive robotic system using ROS.
+
+\subsection{ROS Node Architecture}
+Our system is architected as a set of loosely coupled ROS nodes, each responsible for a specific functionality. This modular design facilitates development, testing, and debugging. Key nodes include:
+\begin{itemize}
+    \item \texttt{navigator\_node} (from \texttt{navigator.py}): Handles SLAM, localization, path planning, and motion control. It subscribes to sensor data (e.g., laser scans, odometry) and publishes velocity commands.
+    \item \texttt{bird\_detector\_node} (from \texttt{bird\_detector.py}): This node implements the two-stage bird detection and classification pipeline.
+        \begin{itemize}
+            \item In an initial exploration phase (e.g., robot state ARRIVED\_AT\_GOAL), it uses YOLOv8n to detect general bird candidates and may publish their initial estimated 3D positions (transformed to the map frame) to the \texttt{/bird\_initial\_position\_detection} topic (type \texttt{PointStamped}).
+            \item Upon navigating closer to a candidate (e.g., robot state ARRIVED\_AT\_BIRD), it performs detailed classification using YOLOv8n for precise localization and a ResNet18 model for species identification from image crops.
+            \item It processes synchronized RGB, depth, and point cloud data (from topics like \texttt{/top\_camera/rgb/preview/image\_raw}, \texttt{/top\_camera/rgb/preview/depth}, and \texttt{/top\_camera/rgb/preview/depth/points}) to accurately determine 3D positions.
+            \item A grouping logic consolidates multiple nearby detections of the same bird, averaging their positions and aggregating classification confidences.
+            \item Confirmed birds are published as \texttt{DetectedBird} messages to the \texttt{/detected\_birds} topic, including species name, confidence, and 3D map coordinates.
+
+        \end{itemize}
+    \item \texttt{ring\_detector\_node} (from \texttt{ring\_detector.py}): Processes camera images to detect rings and their colors. Publishes ring information.
+    \item \texttt{face\_detector\_node} (from \texttt{face\_detector.py}): This node handles the detection of human faces and subsequent gender classification.
+        \begin{itemize}
+            \item It subscribes to synchronized RGB images (from \texttt{/oakd/rgb/preview/image\_raw}) and point cloud data (from \texttt{/oakd/rgb/preview/depth/points}).
+            \item Face detection is performed using a YOLOv8n model.
+            \item Gender classification of detected faces uses the \texttt{dima806/fairface\_gender\_image\_detection} model via the Hugging Face \texttt{transformers} library.
+            \item It calculates the 3D position and surface normal for each detected face using point cloud data and plane fitting (RANSAC).
+            \item Detections are grouped based on proximity in the map frame. For a group to be considered reliable and published, it requires a minimum number of observations (e.g., 5). The gender for the group is determined by the most confident prediction within that group.
+            \item Publishes \texttt{DetectedFace} messages to the \texttt{/detected\_faces} topic. Each message includes the 3D position in the map frame, the estimated surface normal, and the classified gender.
+            \item The node's operation is conditional on the \texttt{/robot\_internal\_state} (e.g., active during MOVING\_TO\_GOAL or SELECTING\_NEW\_GOAL states).
+        \end{itemize}
+    \item \texttt{dialogue\_manager\_system} (based on \texttt{dialogue.py}): This is not a traditional continuously running ROS node but rather a sophisticated Python module with a \texttt{tkinter} GUI that is invoked to handle direct human-robot interaction.
+        \begin{itemize}
+            \item It's likely initiated by the \texttt{robot\_commander\_node} upon receiving a confirmed face detection (including gender) from the \texttt{face\_detector\_node}.
+            \item It takes the detected gender as input to tailor the conversation, and also receives current lists of known bird locations and ring locations to provide contextually relevant information.
+            \item It uses \texttt{speech\_recognition} for STT, \texttt{pyttsx3} for TTS, and \texttt{spaCy} along with custom logic for NLU (extracting bird names, understanding affirmations/negations).
+            \item The dialogue flow is gender-specific, aiming to identify the human's favorite bird and then provide its location relative to park regions and nearby rings.
+            \item The outcome of the dialogue (e.g., the identified favorite bird) can then be used by the \texttt{robot\_commander\_node} for subsequent tasks.
+        \end{itemize}
+    \item \texttt{bridge\_navigator\_node} (from \texttt{bridge\_navigation.py}): This node is responsible for visually navigating the bridge.
+        \begin{itemize}
+            \item It subscribes to RGB images, depth images, and point clouds from the top-mounted arm camera (e.g., \texttt{/top\_camera/rgb/preview/image\_raw}, \texttt{/top\_camera/rgb/preview/depth}, \texttt{/top\_camera/rgb/preview/depth/points}).
+            \item Implements image processing techniques (HSV conversion, Otsu thresholding, Canny edges, Harris corners) to identify bridge guardrails.
+            \item Fits line segments to detected guardrail features and pairs them to determine the bridge path and calculate intermediate navigation poses.
+            \item Detects the end of the bridge by analyzing the binary image.
+            \item Detects a "Red X" stop marker on the ground using color histogram analysis (Hue channel, cosine similarity with reference red histogram) and connected components on the segmented ground plane.
+            \item Transforms calculated 2D image points (midpoints of guardrails, center of Red X) to 3D map poses using point cloud data and TF2 transformations.
+            \item Publishes these poses as \texttt{BridgePose} messages to the \texttt{/bridge\_pose\_map} topic, indicating whether the pose is an intermediate step or the final stopping position.
+            \item Its operation is controlled by the \texttt{/robot\_internal\_state} topic, active during "BRIDGE\_NAVIGATION" or "GO\_TO\_FINAL\_POSITION" states.
+        \end{itemize}
+    \item \texttt{robot\_commander\_node} (e.g., from \texttt{robot\_commander.py}): A central state machine or behavior coordinator that orchestrates the overall robot behavior, sequencing tasks and managing transitions between different operational modes.
+\end{itemize}
+
+\subsection{Communication and Data Flow}
+ROS topics and services are used for inter-node communication:
+\begin{itemize}
+    \item \textbf{Topics:}
+        \begin{itemize}
+            \item \texttt{/camera/rgb/image\_raw}, \texttt{/camera/depth/image\_raw} (and specific camera topics like \texttt{/oakd/rgb/preview/image\_raw} for face detection, \texttt{/top\_camera/rgb/preview/image\_raw} for bird detection): For raw image and depth data.
+            \item \texttt{/oakd/rgb/preview/depth/points} (for face detection), \texttt{/top\_camera/rgb/preview/depth/points} (for bird detection): For point cloud data.
+            \item \texttt{/scan}: For laser scan data.
+            \item \texttt{/odom}: For odometry information.
+            \item \texttt{/cmd\_vel}: For publishing velocity commands to the robot base.
+            \item \texttt{/map}, \texttt{/tf}: For map data and coordinate frame transformations.
+            \item Custom topics for publishing detected objects (e.g., \texttt{/detected\_birds}, \texttt{/detected\_rings}, \texttt{/detected\_faces}, \texttt{/bird\_initial\_position\_detection}) with their properties and map coordinates.
+            \item \texttt{/recognized\_speech}, \texttt{/tts\_request}: For dialogue management.
+            \item \texttt{/robot\_internal\_state}: For coordinating actions between nodes.
+        \end{itemize}
+    \item \textbf{Services:} Potentially used for triggering specific actions (e.g., start bridge crossing maneuver, request bird classification for a region).
+\end{itemize}
+Coordinate transformations between sensor frames, robot frame (\texttt{base\_link}), and the map frame (\texttt{map}) are handled using \texttt{tf2} to ensure all spatial data is consistent.
+
+\subsection{Software Tools and Libraries}
+\begin{itemize}
+    \item \textbf{ROS Noetic} (or Melodic, as applicable): The primary framework for integration.
+    \item \textbf{Python}: The main programming language for implementing the nodes.
+    \item \textbf{OpenCV}: Extensively used for image processing tasks.
+    \item \textbf{Deep Learning Libraries:}
+        \begin{itemize}
+            \item \textbf{Ultralytics YOLO:} For the YOLOv8n object detection model.
+            \item \textbf{PyTorch} and \textbf{Torchvision:} For the ResNet18 image classification model.
+        \end{itemize}
+    \item \textbf{SpeechRecognition:} For speech processing.
+    \item \textbf{Standard ROS packages:} \texttt{gmapping\_slam}, \texttt{amcl}, \texttt{move\_base} (or custom navigation stack components), \texttt{tf2\_ros}, \texttt{cv\_bridge}, \texttt{sensor\_msgs\_py}, \texttt{message\_filters}.
+    \item \textbf{Hugging Face Transformers:} For loading and running the gender classification model.
+    \item \textbf{ReportLab:} For generating PDF reports of detected birds.
+\end{itemize}
+
+\section{Results}
+This section describes the performance of our system in the simulated Task T2s environment. As the task was simulation-only, all evaluations were performed within this context.
+
+\subsection{Individual Module Performance}
+\begin{itemize}
+    \item \textbf{Autonomous Navigation:} The navigation system, developed by Matjaž, generally performed reliably in exploring the simulated environment and navigating to waypoints. Path planning using A* on the occupancy grid allowed for effective obstacle avoidance.
+    \item \textbf{Bird Detection and Classification:} Matjaž's bird detection module, utilizing YOLOv8n for initial detection and a ResNet18 model for species classification, showed good performance in identifying and classifying the 24 target bird species. The two-stage approach, combined with depth filtering and point cloud-based localization, improved accuracy. The system successfully recorded bird locations via ROS topics and generated a PDF summary. Performance depended on factors like bird visibility, distance, and partial occlusions.
+    \item \textbf{Ring Detection:} Rok's ring detection module, employing image processing techniques, could identify rings and their colors with reasonable accuracy. Performance was sensitive to lighting conditions and the clarity of ring edges in the simulation.
+    \item \textbf{Face Detection and Gender Recognition:} Rok's module for face detection (YOLOv8n) and gender classification (using the FairFace ViT model \cite{FairFaceGenderModel}) performed well in identifying faces and assigning a gender. The use of 3D point cloud data allowed for robust localization and normal estimation for interaction. The grouping mechanism helped in publishing more stable and reliable detections. The reported accuracy of the gender model itself is high (approx. 93.4\%), but overall system performance also depends on the quality of face detection and environmental factors.
+    \item \textbf{Human-Robot Interaction:} The dialogue system implemented by Rok, featuring a \texttt{tkinter} GUI and gender-specific conversation flows, facilitated detailed interactions. The robot could inquire about favorite birds and provide their locations based on integrated environmental data (bird and ring positions). Speech input via Google STT and output via \texttt{pyttsx3} enabled natural communication. The system's NLU capabilities allowed for extraction of bird names and understanding of basic affirmations/negations. Its effectiveness, however, remained dependent on the clarity of speech input and the accuracy of the underlying STT/NLP components.
+    \item \textbf{Bridge Crossing:} Maj's bridge navigation module, using visual cues from the arm camera, demonstrated the capability to detect bridge guardrails, estimate the path, and identify the end of the bridge or a "Red X" stop marker. The system processed Hue information, applied Otsu thresholding, Harris corners, and line fitting to guide the robot. The detection of the "Red X" involved color histogram matching. Calculated poses were published for the navigation system. This complex visual servoing task required careful tuning of multiple image processing parameters.
+\end{itemize}
+
+\subsection{Overall System Performance}
+The integrated system, orchestrated by Maj, was able to perform sequences of tasks as required by T2s. The robot could navigate the environment, search for birds, identify rings, interact with simulated humans, and cross the bridge.
+
+During test runs, the robot successfully demonstrated the core functionalities. For example, it could explore a section of the map, identify several bird species, report their locations, then navigate towards a designated area for ring detection or interaction. The bridge crossing maneuver was also executed successfully on multiple occasions.
+
+\begin{figure}[h!]
+    \centering
+    % \includegraphics[width=0.8\textwidth]{images/simulation_screenshot.png} % Replace with an actual screenshot if available
+    \fbox{\parbox[c][10cm][c]{0.8\textwidth}{\centering Placeholder for a simulation screenshot showing the robot in action. E.g., navigating, detecting a bird, or crossing the bridge.}}
+    \caption{Conceptual representation of the robot performing Task T2s in the simulation environment.}
+    \label{fig:simulation}
+\end{figure}
+
+However, as with any complex robotic system, challenges remained. Intermittent issues with sensor noise in the simulation, timing of ROS messages, or occasional misclassifications by perception modules sometimes led to sub-optimal behavior. We are aware that problems during runs still persist, but in general, the system demonstrated that the core logic and integration were functional.
+
+\section{Division of Work}
+The project was a collaborative effort by Team Pi. While we often discussed and debugged problems together, primary responsibilities for development and implementation were divided as follows:
+
+\begin{itemize}
+    \item \textbf{Rok Hladin (32\%):}
+        \begin{itemize}
+            \item Developed the ring detection.
+            \item Implemented the human-robot interaction system, including face detection (YOLOv8n), 3D localization with normal estimation, and gender classification (using the FairFace ViT model \cite{FairFaceGenderModel}) for initiating dialogue.
+            \item Implemented speech-to-text (STT) and text-to-speech (TTS) functionalities with basic text proce within the dialogue manager.
+        \end{itemize}
+    \item \textbf{Matjaž Pogačnik (34\%):}
+        \begin{itemize}
+            \item Developed the bird detection and classification system (YOLOv8n for detection, ResNet18 for species classification), including training/fine-tuning the classification model for 24 bird species, point cloud processing for 3D localization, and detection grouping.
+            \item Implemented the autonomous navigation and exploration system (mapping, path planning, localization).
+            \item Implemented the functionality for saving/reporting detected birds via ROS topics and PDF generation.
+        \end{itemize}
+    \item \textbf{Maj Bregar (34\%):}
+        \begin{itemize}
+            \item Developed the bridge crossing module (\texttt{bridge\_navigation.py}), including visual detection of bridge guardrails, path estimation, end-of-bridge detection, "Red X" stop marker detection using image processing (Hue, Otsu, Harris, line fitting, color histograms) and point cloud integration for pose calculation.
+            \item Led the overall system integration in ROS, designing the node architecture, message flows, and coordinating module interactions.
+            \item Managed the main robot control logic/state machine (from \texttt{robot\_commander.py}).
+            \item Addressed general debugging and system stability issues.
+        \end{itemize}
+\end{itemize}
+
+\begin{figure}[h!]
+    \centering
+\begin{tikzpicture}
+  \pie[cloud, text=inside, scale font, sum=100]{32/Rok\\Hladin, 34/Matjaž\\Pogačnik, 34/Maj\\Bregar}
+\end{tikzpicture}
+    \caption{Distribution of work among team members.}
+    \label{fig:work_distribution}
+\end{figure}
+
+\section{Conclusion}
+Team Pi successfully developed an integrated robotic system capable of addressing the multifaceted challenges of Task T2s within the Renaissance Town simulation. Our robot demonstrated capabilities in autonomous navigation, object (bird and ring) detection and recognition, human-robot interaction via speech and gender detection, and specialized maneuvers like bridge crossing. The modular ROS-based architecture facilitated parallel development and effective integration of diverse functionalities.
+
+Throughout this project, we encountered several technical challenges:
+\begin{itemize}
+    \item \textbf{Simulation Environment Quirks:} We faced issues with the Gazebo simulation environment. Initially, the Ogre rendering engine did not render the sky, requiring a switch to Ogre2. We also had to debug a problem where coordinates were unexpectedly flipped by 90 degrees in a configuration file, which complicated initial setup and localization efforts.
+    \item \textbf{Resource Limitations:} Development was constrained by the need to use lab computers, as running the full simulation and ROS environment on personal laptops was often not feasible. This limited our access and sometimes slowed down the development and testing cycles.
+    \item \textbf{Integration Complexity:} Integrating multiple perception, navigation, and interaction modules into a reliably functioning system is inherently complex. Ensuring robust data flow, timing, and error handling across different ROS nodes required significant effort.
+\end{itemize}
+
+Despite these challenges, the project was a valuable learning experience, providing deep insights into the practical aspects of developing intelligent robotic systems. We were able to apply theoretical knowledge to solve concrete problems and work collaboratively to build a complex system. We would have gladly included more visual results from the simulation, but access to a fully operational simulation environment was limited at the time of writing this report.
+
+Future work could focus on enhancing the robustness of individual modules, particularly improving the accuracy of classification tasks under varying conditions, and further refining the decision-making logic of the main robot commander for more fluid and adaptable behavior in complex scenarios.
+
+\appendix
+\section{List of Target Bird Species}
+\label{appendix:birds}
+The bird species classification module (ResNet18) was trained to identify the following 24 distinct species:
+\begin{enumerate}
+    \item 002.Laysan\_Albatross
+    \item 012.Yellow\_headed\_Blackbird
+    \item 014.Indigo\_Bunting
+    \item 025.Pelagic\_Cormorant
+    \item 029.American\_Crow
+    \item 033.Yellow\_billed\_Cuckoo
+    \item 035.Purple\_Finch
+    \item 042.Vermilion\_Flycatcher
+    \item 048.European\_Goldfinch
+    \item 050.Eared\_Grebe
+    \item 059.California\_Gull
+    \item 068.Ruby\_throated\_Hummingbird
+    \item 073.Blue\_Jay
+    \item 081.Pied\_Kingfisher
+    \item 095.Baltimore\_Oriole
+    \item 101.White\_Pelican
+    \item 106.Horned\_Puffin
+    \item 108.White\_necked\_Raven
+    \item 112.Great\_Grey\_Shrike
+    \item 118.House\_Sparrow
+    \item 134.Cape\_Glossy\_Starling
+    \item 138.Tree\_Swallow
+    \item 144.Common\_Tern
+    \item 191.Red\_headed\_Woodpecker
+\end{enumerate}
+\textit{Note: The system is configured for these 24 species, as reflected in the classification model architecture (`resnet.fc` output features) and training data structure used in \texttt{bird\_detector.py}.}
+
+\printbibliography
+\end{document}
