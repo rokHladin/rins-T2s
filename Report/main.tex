@@ -297,5 +297,113 @@ Coordinate transformations between sensor frames, robot frame (\texttt{base\_lin
     \item \textbf{ReportLab:} For generating PDF reports of detected birds.
 \end{itemize}
 
+\section{Results}
+This section describes the performance of our system in the simulated Task T2s environment. As the task was simulation-only, all evaluations were performed within this context.
+
+\subsection{Individual Module Performance}
+\begin{itemize}
+    \item \textbf{Autonomous Navigation:} The navigation system, developed by Matjaž, generally performed reliably in exploring the simulated environment and navigating to waypoints. Path planning using A* on the occupancy grid allowed for effective obstacle avoidance.
+    \item \textbf{Bird Detection and Classification:} Matjaž's bird detection module, utilizing YOLOv8n for initial detection and a ResNet18 model for species classification, showed good performance in identifying and classifying the 24 target bird species. The two-stage approach, combined with depth filtering and point cloud-based localization, improved accuracy. The system successfully recorded bird locations via ROS topics and generated a PDF summary. Performance depended on factors like bird visibility, distance, and partial occlusions.
+    \item \textbf{Ring Detection:} Rok's ring detection module, employing image processing techniques, could identify rings and their colors with reasonable accuracy. Performance was sensitive to lighting conditions and the clarity of ring edges in the simulation.
+    \item \textbf{Face Detection and Gender Recognition:} Rok's module for face detection (YOLOv8n) and gender classification (using the FairFace ViT model \cite{FairFaceGenderModel}) performed well in identifying faces and assigning a gender. The use of 3D point cloud data allowed for robust localization and normal estimation for interaction. The grouping mechanism helped in publishing more stable and reliable detections. The reported accuracy of the gender model itself is high (approx. 93.4\%), but overall system performance also depends on the quality of face detection and environmental factors.
+    \item \textbf{Human-Robot Interaction:} The dialogue system implemented by Rok, featuring a \texttt{tkinter} GUI and gender-specific conversation flows, facilitated detailed interactions. The robot could inquire about favorite birds and provide their locations based on integrated environmental data (bird and ring positions). Speech input via Google STT and output via \texttt{pyttsx3} enabled natural communication. The system's NLU capabilities allowed for extraction of bird names and understanding of basic affirmations/negations. Its effectiveness, however, remained dependent on the clarity of speech input and the accuracy of the underlying STT/NLP components.
+    \item \textbf{Bridge Crossing:} Maj's bridge navigation module, using visual cues from the arm camera, demonstrated the capability to detect bridge guardrails, estimate the path, and identify the end of the bridge or a "Red X" stop marker. The system processed Hue information, applied Otsu thresholding, Harris corners, and line fitting to guide the robot. The detection of the "Red X" involved color histogram matching. Calculated poses were published for the navigation system. This complex visual servoing task required careful tuning of multiple image processing parameters.
+\end{itemize}
+
+\subsection{Overall System Performance}
+The integrated system, orchestrated by Maj, was able to perform sequences of tasks as required by T2s. The robot could navigate the environment, search for birds, identify rings, interact with simulated humans, and cross the bridge.
+
+During test runs, the robot successfully demonstrated the core functionalities. For example, it could explore a section of the map, identify several bird species, report their locations, then navigate towards a designated area for ring detection or interaction. The bridge crossing maneuver was also executed successfully on multiple occasions.
+
+\begin{figure}[h!]
+    \centering
+    % \includegraphics[width=0.8\textwidth]{images/simulation_screenshot.png} % Replace with an actual screenshot if available
+    \fbox{\parbox[c][10cm][c]{0.8\textwidth}{\centering Placeholder for a simulation screenshot showing the robot in action. E.g., navigating, detecting a bird, or crossing the bridge.}}
+    \caption{Conceptual representation of the robot performing Task T2s in the simulation environment.}
+    \label{fig:simulation}
+\end{figure}
+
+However, as with any complex robotic system, challenges remained. Intermittent issues with sensor noise in the simulation, timing of ROS messages, or occasional misclassifications by perception modules sometimes led to sub-optimal behavior. We are aware that problems during runs still persist, but in general, the system demonstrated that the core logic and integration were functional.
+
+\section{Division of Work}
+The project was a collaborative effort by Team Pi. While we often discussed and debugged problems together, primary responsibilities for development and implementation were divided as follows:
+
+\begin{itemize}
+    \item \textbf{Rok Hladin (32\%):}
+        \begin{itemize}
+            \item Developed the ring detection.
+            \item Implemented the human-robot interaction system, including face detection (YOLOv8n), 3D localization with normal estimation, and gender classification (using the FairFace ViT model \cite{FairFaceGenderModel}) for initiating dialogue.
+            \item Implemented speech-to-text (STT) and text-to-speech (TTS) functionalities with basic text proce within the dialogue manager.
+        \end{itemize}
+    \item \textbf{Matjaž Pogačnik (34\%):}
+        \begin{itemize}
+            \item Developed the bird detection and classification system (YOLOv8n for detection, ResNet18 for species classification), including training/fine-tuning the classification model for 24 bird species, point cloud processing for 3D localization, and detection grouping.
+            \item Implemented the autonomous navigation and exploration system (mapping, path planning, localization).
+            \item Implemented the functionality for saving/reporting detected birds via ROS topics and PDF generation.
+        \end{itemize}
+    \item \textbf{Maj Bregar (34\%):}
+        \begin{itemize}
+            \item Developed the bridge crossing module (\texttt{bridge\_navigation.py}), including visual detection of bridge guardrails, path estimation, end-of-bridge detection, "Red X" stop marker detection using image processing (Hue, Otsu, Harris, line fitting, color histograms) and point cloud integration for pose calculation.
+            \item Led the overall system integration in ROS, designing the node architecture, message flows, and coordinating module interactions.
+            \item Managed the main robot control logic/state machine (from \texttt{robot\_commander.py}).
+            \item Addressed general debugging and system stability issues.
+        \end{itemize}
+\end{itemize}
+
+\begin{figure}[h!]
+    \centering
+\begin{tikzpicture}
+  \pie[cloud, text=inside, scale font, sum=100]{32/Rok\\Hladin, 34/Matjaž\\Pogačnik, 34/Maj\\Bregar}
+\end{tikzpicture}
+    \caption{Distribution of work among team members.}
+    \label{fig:work_distribution}
+\end{figure}
+
+\section{Conclusion}
+Team Pi successfully developed an integrated robotic system capable of addressing the multifaceted challenges of Task T2s within the Renaissance Town simulation. Our robot demonstrated capabilities in autonomous navigation, object (bird and ring) detection and recognition, human-robot interaction via speech and gender detection, and specialized maneuvers like bridge crossing. The modular ROS-based architecture facilitated parallel development and effective integration of diverse functionalities.
+
+Throughout this project, we encountered several technical challenges:
+\begin{itemize}
+    \item \textbf{Simulation Environment Quirks:} We faced issues with the Gazebo simulation environment. Initially, the Ogre rendering engine did not render the sky, requiring a switch to Ogre2. We also had to debug a problem where coordinates were unexpectedly flipped by 90 degrees in a configuration file, which complicated initial setup and localization efforts.
+    \item \textbf{Resource Limitations:} Development was constrained by the need to use lab computers, as running the full simulation and ROS environment on personal laptops was often not feasible. This limited our access and sometimes slowed down the development and testing cycles.
+    \item \textbf{Integration Complexity:} Integrating multiple perception, navigation, and interaction modules into a reliably functioning system is inherently complex. Ensuring robust data flow, timing, and error handling across different ROS nodes required significant effort.
+\end{itemize}
+
+Despite these challenges, the project was a valuable learning experience, providing deep insights into the practical aspects of developing intelligent robotic systems. We were able to apply theoretical knowledge to solve concrete problems and work collaboratively to build a complex system. We would have gladly included more visual results from the simulation, but access to a fully operational simulation environment was limited at the time of writing this report.
+
+Future work could focus on enhancing the robustness of individual modules, particularly improving the accuracy of classification tasks under varying conditions, and further refining the decision-making logic of the main robot commander for more fluid and adaptable behavior in complex scenarios.
+
+\appendix
+\section{List of Target Bird Species}
+\label{appendix:birds}
+The bird species classification module (ResNet18) was trained to identify the following 24 distinct species:
+\begin{enumerate}
+    \item 002.Laysan\_Albatross
+    \item 012.Yellow\_headed\_Blackbird
+    \item 014.Indigo\_Bunting
+    \item 025.Pelagic\_Cormorant
+    \item 029.American\_Crow
+    \item 033.Yellow\_billed\_Cuckoo
+    \item 035.Purple\_Finch
+    \item 042.Vermilion\_Flycatcher
+    \item 048.European\_Goldfinch
+    \item 050.Eared\_Grebe
+    \item 059.California\_Gull
+    \item 068.Ruby\_throated\_Hummingbird
+    \item 073.Blue\_Jay
+    \item 081.Pied\_Kingfisher
+    \item 095.Baltimore\_Oriole
+    \item 101.White\_Pelican
+    \item 106.Horned\_Puffin
+    \item 108.White\_necked\_Raven
+    \item 112.Great\_Grey\_Shrike
+    \item 118.House\_Sparrow
+    \item 134.Cape\_Glossy\_Starling
+    \item 138.Tree\_Swallow
+    \item 144.Common\_Tern
+    \item 191.Red\_headed\_Woodpecker
+\end{enumerate}
+\textit{Note: The system is configured for these 24 species, as reflected in the classification model architecture (`resnet.fc` output features) and training data structure used in \texttt{bird\_detector.py}.}
+
 \printbibliography
 \end{document}
