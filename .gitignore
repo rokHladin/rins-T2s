@@ -7,5 +7,6 @@ log
 Report/*
 !Report/main.tex
 !Report/literature.bib
+!Report/images/
 
 train_bird_classifier/filtered_data
