@@ -154,9 +154,9 @@ This section describes the core methods used in our system.
 
 
 \subsection{Autonomous Navigation}
-Autonomous navigation is crucial for the robot to explore the environment and reach designated points of interest. Our approach typically involves:
+Our navigation system integrates SLAM-based mapping, dynamic path planning, and robust localization using standard ROS 2 tools.
 \begin{itemize}
-    \item \textbf{Mapping:} Utilizing SLAM (Simultaneous Localization and Mapping) techniques, such as GMapping, to build a 2D occupancy grid map of the simulated environment as the robot explores.
+    \item \textbf{Mapping:} Utilizing SLAM (Simultaneous Localization and Mapping) techniques, such as GMapping, to build a 2D occupancy grid map of the simulated environment as we drive the robot.
     \item \textbf{Path Planning:} Our robot performs path planning using the ROS 2 Navigation Stack (Nav2), which is responsible for computing safe and efficient paths to target locations. Path planning is initiated when \texttt{RobotCommander} node sends a goal to the \texttt{NavigateToPose} action server, provided by the \texttt{nav2\_bt\_navigator} node. Internally, \texttt{nav2\_bt\_navigator} runs a Behavior Tree that coordinates the overall navigation process. It uses the \texttt{nav2\_planner} node, which performs global path planning using graph-based search algorithms such as A* or Dijkstra's algorithm on a 2D occupancy grid. Once a global path is found, the \texttt{nav2\_controller} node handles local path following and dynamic obstacle avoidance using a local planner. In our architecture, \texttt{RobotCommander} acts as a high-level client, while the actual path planning, map updates, and path execution are handled by Nav2 nodes and core ROS 2 action mechanisms. 
     \item \textbf{Exploration Strategy:} To ensure comprehensive coverage of the environment, we compute navigation waypoints from the acquired map. This is done by fitting lines using Hough transform and slicing the fitted lines into segments of 0.2 meters. For each segment a navigation waypoint is set as a point 0.7 meters from the middle of the line segment to each side of the line. If the location is illegal based on the map, it is removed. If the generated waypoint is too close to any adjacent wall for safe navigation of the robot, it is moved away perpendicular to that wall, ensuring 0.5 meter clearance of each waypoint. Each navigation waypoint also has a direction which points towards the wall. The robot navigator then visits these goals in greedy way, selecting the closest goal based on A* distance.
     \item \textbf{Localization:} Continuous localization using AMCL (Adaptive Monte Carlo Localization) was used in all parts of the task to track the robot's pose within the map accurately.
@@ -386,6 +386,11 @@ Our system is architected as a set of loosely coupled ROS nodes, each responsibl
 
 \subsection{Communication and Data Flow}
 
+The core logic of the robot is implemented in the main navigation node (\texttt{navigator.py}), which is responsible for coordinating all high-level behavior throughout the task. This script maintains the robot's current operational state via a finite state machine, guiding the robot through stages such as exploring the park, approaching birds, interacting with humans, and crossing the bridge. That state is being broadcast to every node with the topic \texttt{/robot\_internal\_state}.
+
+
+
+
 
 
 \begin{tikzpicture}[shorten >=1pt, node distance=5cm and 3.5cm, on grid, font=\scriptsize]
@@ -419,32 +424,25 @@ Our system is architected as a set of loosely coupled ROS nodes, each responsibl
         ;
 \end{tikzpicture}
 
-Topics:
+The navigation node subscribes to several topics to receive information from perception and planning nodes. This data is used to update internal structures such as the list of known birds, rings, and people to interact with.
+
 \begin{itemize}
-    \item \texttt{/detected\_faces} (published by \textbf{face\_detector})
-    \item \texttt{/ring\_position} (published by \textbf{ring\_detector})
-    \item \texttt{/detected\_birds} (published by \textbf{bird\_detector})
-    \item \texttt{/bird\_initial\_position\_detection} (published by \textbf{bird\_detector}) - the initial pose of
-    \item \texttt{/inspection\_markers} (published by \textbf{inspection\_planner}) - the navigation waypoints
+    \item \texttt{/detected\_faces} (from \textbf{face\_detector}): 
+    New face groups are added to an internal queue for future interactions.
+    
+    \item \texttt{/ring\_position} (from \textbf{ring\_detector}): 
+    Detected ring groups are stored in a list used to guide bird localization.
+
+    \item \texttt{/detected\_birds} (from \textbf{bird\_detector}): 
+    Detected and classified birds are added to an internal list to avoid duplicate visits.
+
+    \item \texttt{/bird\_initial\_position\_detection} (from \textbf{bird\_detector}): 
+    Triggered when a bird is spotted at a goal; the navigator checks costmaps and sends a navigation goal.
+
+    \item \texttt{/inspection\_markers} (from \textbf{planner}): 
+    During initialization, a list of exploration waypoints is received and stored in a goal queue.
 \end{itemize}
 
-
-% ROS topics and services are used for inter-node communication:
-% \begin{itemize}
-%     \item \textbf{Topics:}
-%         \begin{itemize}
-%             \item \texttt{/camera/rgb/image\_raw}, \texttt{/camera/depth/image\_raw} (and specific camera topics like \texttt{/oakd/rgb/preview/image\_raw} for face detection, \texttt{/top\_camera/rgb/preview/image\_raw} for bird detection): For raw image and depth data.
-%             \item \texttt{/oakd/rgb/preview/depth/points} (for face detection), \texttt{/top\_camera/rgb/preview/depth/points} (for bird detection): For point cloud data.
-%             \item \texttt{/scan\_filtered}: For laser scan data.
-%             \item \texttt{/odom}: For odometry information.
-%             \item \texttt{/cmd\_vel}: For publishing velocity commands to the robot base.
-%             \item \texttt{/map}, \texttt{/tf}: For map data and coordinate frame transformations.
-%             \item Custom topics for publishing detected objects (e.g., \texttt{/detected\_birds}, \texttt{/detected\_rings}, \texttt{/detected\_faces}, \texttt{/bird\_initial\_position\_detection}) with their properties and map coordinates.
-%             \item \texttt{/recognized\_speech}, \texttt{/tts\_request}: For dialogue management.
-%             \item \texttt{/robot\_internal\_state}: For coordinating actions between nodes.
-%         \end{itemize}
-% \end{itemize}
-% Coordinate transformations between sensor frames, robot frame (\texttt{base\_link}), and the map frame (\texttt{map}) are handled using \texttt{tf2} to ensure all spatial data is consistent.
 
 \subsection{Software Tools and Libraries}
 \begin{itemize}
