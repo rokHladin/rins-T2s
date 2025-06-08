@@ -14,6 +14,7 @@
 \usepackage{subcaption}
 
 \usepackage{pgf-pie}
+\usepackage{float}
 
 % TODO notes
 \usepackage{todonotes}
@@ -182,22 +183,64 @@ The task required detecting and classifying multiple bird species.
 \end{itemize}
 
 \subsection{Ring Detection}
-Detecting rings involved a combination of image processing techniques:
+
+Ring detection is performed using a series of synchronized image processing and 3D analysis steps implemented in the \texttt{ring\_detector.py} node. The pipeline is triggered only when the robot reaches specific states such as \texttt{ARRIVED\_AT\_GOAL} or \texttt{MOVING\_CLOSER\_TO\_BIRD}. The key steps are:
+
 \begin{itemize}
-    \item \textbf{Image Preprocessing:} The input RGBD image is first separated to color image and depth image. To enhance contrast and facilitate edge detection, methods like Otsu's thresholding can be applied to binarize the image. Gaussian blur is often used to reduce noise.
-    \item \textbf{Edge Detection:} The Canny edge detector is employed to find prominent edges in the preprocessed image, which are likely to form the boundaries of the rings.
-    \item \textbf{Shape Detection:}
+    \item \textbf{Input Synchronization:} The detector subscribes to synchronized RGB images, depth images, and point clouds from the top arm-mounted camera.
+
+    \item \textbf{Preprocessing:} The RGB image is converted to HSV color space, and the depth image is normalized and clamped to 2.0 meters to focus detection on nearby rings. This constraint improves reliability by ignoring distant, noisy shapes.
+
+    \item \textbf{Edge and Corner Filtering:}
+    \begin{itemize}
+        \item \textbf{Edge Detection:} The depth image is passed through a Canny edge detector with thresholds of 50 and 150.
+        \item \textbf{Corner Detection:} Harris corner detection (block size 5, kernel size 3, k=0.1) is applied to the Canny edge map to identify and remove edge regions that belong to corners. This helps separate overlapping objects, such as birds close to rings and the rods holding the rings in place.
+        \item \textbf{Edge Spur Removal:} Small spurs (up to 25 pixels long) are pruned by tracing from edge endpoints, reducing leftover artifacts by imprecise harris corner removal.
+    \end{itemize}
+
+    \item \textbf{Contour and Ellipse Detection:}
+    \begin{itemize}
+        \item Contours are extracted from the cleaned edge image.
+        \item Contours shorter than 10 points or too linear (with $>$85\% of points lying close to a line) are discarded.
+        \item Remaining contours are fitted with ellipses (only if they have $\geq$9 points).
+    \end{itemize}
+
+   \item \textbf{Ring Candidate Filtering:}
+    \begin{itemize}
+        \item To identify actual ring shapes, the algorithm considers all pairs of fitted ellipses and tests whether one could be the inner and the other the outer boundary of the same ring.
+        \item Each pair is evaluated using several geometric constraints to filter out false positives:
         \begin{itemize}
-            \item \textbf{Edge Removal}: When we have image of edges, corners are removed by first detecting corners with Harris corner detector and removing those regions. This step is needed, because some birds are quite near the rings and can be treated as part of the same edge as a ring.
-            \item \textbf{Contour and ellipse fitting:} After edge detection, contours are extracted and ellipses are fitted to those contours which become ring candidates.
-            \item \textbf{Candidates filtering}: These ring candidates are then filtered based on geometric properties (area, circularity, aspect ratio, angle difference) to identify potential ring shapes. Program iterates through each pair of ring candidates and checks if one is completely inside another and if they are similar shapes.
-            \item \textbf{Checking 3D structure}: Task was to distinguish between 3D rings in the air and rings drawn on boxes. This is done by taking enough sample points on the ring and comparing it to the sample points points inside the ring. If points inside are farther enough, ring is confirmed to be a 3D ring.
+            \item The distance between the centers of the two ellipses must be $\leq$ 1.0 pixel to ensure they are concentric.
+            \item The difference in orientation angles between the ellipses must be $\leq$ 40° to enforce shape alignment.
+            \item The difference in their minor axes (used to approximate ring thickness) must fall between 2 and 50 pixels.
+            \item Both ellipses must have a minimum minor axis of at least 4 pixels to ensure they are not degenerate or too flat.
+            \item The aspect ratio (major/minor axis) of each ellipse must be $\leq$ 1.5, enforcing that the ellipses are roughly circular.
+            \item The difference between their border thicknesses (computed from major and minor axes) must be $\leq$ 5 pixels, ensuring visual symmetry of the ring.
         \end{itemize}
-    \item \textbf{Color Detection:} Once a ring candidate is identified, the region within the ring in the original RGB image is analyzed to determine its color. This can be done by averaging pixel values in the HSV color space and mapping them to predefined color categories.
+        \item After satisfying these 2D constraints, each candidate undergoes a 3D depth validation step. Specifically, 10 radial depth samples are taken inside the inner ellipse (center region) and between the two ellipses (ring region). The ring is accepted only if the median depth of the center is at least 1.5 meters greater than the ring border. This confirms that the ring is a hollow structure suspended in space (i.e., a real 3D ring), not a ring drawn or printed on a flat surface.
+    \end{itemize}
+
+
+    \item \textbf{Color Classification:}
+    \begin{itemize}
+        \item A binary ring mask is created from the area between the inner and outer ellipses, slightly eroded to reduce noise, and applied to the HSV image.
+        \item A 180-bin hue histogram is computed over the masked region, smoothed with a circular Gaussian ($\sigma = 3$), and normalized.
+        \item The histogram is compared to predefined reference histograms for red (0°), green (60°), and blue (120°) using cosine similarity.
+        \item If the average V (value) channel in the ring region is below 0.35, the ring is classified as \texttt{black}; otherwise, the color with the highest similarity score is selected.
+    \end{itemize}
+
+
+    \item \textbf{Ring Grouping and Publishing:}
+    \begin{itemize}
+        \item Ring detections are grouped if they occur within 0.5 meters of each other.
+        \item Groups with at least 3 observations are used to determine the average position and majority color.
+        \item Published ring detections (\texttt{DetectedRing} messages on \texttt{/ring\_position}) include timestamp, color, and 3D map coordinates.
+        \item Previously published detections are tracked and not duplicated.
+    \end{itemize}
 \end{itemize}
 The \texttt{ring\_detector.py} script is responsible for these operations.
 
-\begin{figure}[h!]
+\begin{figure}[H]
     \centering
     \includegraphics[width=1\textwidth]{images/ring_detection3.png}
     \caption{Ring detection helper window showing detected ellipses.}
@@ -260,27 +303,34 @@ This system is designed to be invoked when an interaction is required, taking th
     \label{fig:dialogue}
 \end{figure}
 
+
+
 \subsection{Bridge Crossing}
-Navigating the bridge requires careful visual perception and control, primarily utilizing the robot's top-mounted arm camera. The process involves several stages:
+Navigating the bridge involves robust visual perception and dynamic pose estimation using the robot's top-mounted arm camera. The processing pipeline adapts based on the robot’s situation and environment, and proceeds through the following stages:
+
 \begin{itemize}
-    \item \textbf{Image Preprocessing:} The RGB image from the arm camera (e.g., \texttt{/top\_camera/rgb/preview/image\_raw}) is converted to the HSV color space. The Hue channel is extracted and blurred. Otsu's thresholding is applied to the Hue channel to create a binary image, attempting to segment the bridge structure or water from the surroundings. This binary image is then inverted.
+    \item \textbf{Image Preprocessing:} The RGB input from \texttt{/top\_camera/rgb/preview/image\_raw} is converted to HSV. The Hue channel is blurred and thresholded using Otsu's method, then inverted to highlight the bridge structure. This binary image serves as the foundation for further analysis.
+
     \item \textbf{Guardrail Detection and Path Guidance:}
-        \begin{itemize}
-            \item \textbf{Edge and Corner Detection:} Canny edge detection is applied to the binary image. Harris corner detection is then used on these edges to identify key points, which are subsequently removed from the edge image to help separate parallel guardrail lines.
-            \item \textbf{Line Segment Fitting:} Connected components analysis is performed on the modified edge image. The two largest components (ideally corresponding to the guardrails) are selected. Points from these components are sorted, and line segments are fitted to portions of these points.
-            \item \textbf{Pairing and Filtering Segments:} These line segments are paired (one from the left, one from the right) based on angle similarity and spatial separation to form representations of the bridge path. A sequence of these pairs is filtered to ensure smooth transitions in direction.
-            \item \textbf{Pose Calculation:} For valid pairs, a midpoint between the line segments and an average direction normal are calculated. This 2D image information is then projected into 3D using the synchronized point cloud data (from \texttt{/top\_camera/rgb/preview/depth/points}) and transformed into a target pose (position and orientation) in the map frame.
-        \end{itemize}
-    \item \textbf{End-of-Bridge Detection:} The system checks if the top part of the binary image is predominantly white, indicating the robot is likely at the end of the bridge and looking at the next surface (e.g., grass island). If so, a forward pose is calculated.
-    \item \textbf{"Red X" Stop Marker Detection:}
-        \begin{itemize}
-            \item The binary image (representing the ground/bridge surface) is further processed. A region near the robot in the middle of the image is masked out to avoid detecting parts of the robot itself.
-            \item Connected components analysis is performed on the remaining ground mask.
-            \item For components exceeding an area threshold, a Hue histogram is calculated from the original HSV image within the component's mask. This histogram is compared (using cosine similarity) against a reference histogram for the color red (generated as a wrapped Gaussian).
-            \item If a component's color significantly matches red and meets area criteria, it's identified as a "Red X". Its center is then used to calculate a final stopping pose.
-        \end{itemize}
+    \begin{itemize}
+        \item \textbf{Edge and Corner Removal:} Canny edge detection is applied. Harris corners are detected and removed from the upper third of the image and, if needed, the entire image to suppress noise from bridge-land transitions.
+        \item \textbf{Component Analysis and Line Fitting:} The two largest edge components are selected. Each is segmented into vertical slices, and line segments are fit using \texttt{cv2.fitLine}. Metadata including endpoints, angles, parent edge ids and centers is stored.
+        \item \textbf{Line Pairing and Filtering:} Pairs of left and right lines are formed based on angular similarity ($\leq$ 60°), spatial separation (20–80\% of image width), and different component IDs. Pairs with abrupt direction changes ($>$ 35°) are filtered out.
+        \item \textbf{Pose Calculation:} For the final valid pair, the midpoint is computed and a forward direction vector is inferred. This 2D image pose is transformed into a 3D pose in the \texttt{map} frame using synchronized point cloud data from \texttt{/top\_camera/rgb/preview/depth/points}.
+    \end{itemize}
+    \item \textbf{End-of-Bridge Detection:} When crossing from the water bridge onto land, visual segmentation temporarily fails. To handle this, the system checks if the top 20 rows of the binary image are fully white. If so, it assumes the robot is at the edge of the bridge and blindly advances. A forward pose is computed from a fixed point in the image and transformed to the map frame for navigation.
+
+    \item \textbf{Red X Marker Detection:} After reaching land, the robot seeks a red X stop marker indicating the final goal location.
+    \begin{itemize}
+        \item The lower central portion of the image is masked to avoid the robot's body.
+        \item The remaining binary mask is eroded and thresholded again to isolate colored regions on the path.
+        \item Connected components are analyzed, and for large enough blobs, hue histograms are computed and compared to a red reference histogram using cosine similarity.
+        \item If similarity exceeds 0.75, the blob is accepted as a red X, and its center point is projected into a final 3D pose for navigation.
+    \end{itemize}
+    
 \end{itemize}
-The \texttt{bridge\_navigation.py} script implements this logic, publishing \texttt{BridgePose} messages (containing a map pose and a flag indicating if it's the final position) to the \texttt{/bridge\_pose\_map} topic. The node's operation is typically active when the robot is in a "BRIDGE\_NAVIGATION" or "GO\_TO\_FINAL\_POSITION" state.
+
+The \texttt{bridge\_navigation.py} node publishes the resulting pose as a \texttt{BridgePose} message to the \texttt{/bridge\_pose\_map} topic, tagging it as a final goal if a red X is detected. The node is active only when the robot is in the \texttt{BRIDGE\_NAVIGATION} or \texttt{GO\_TO\_FINAL\_POSITION} state, unless manually overridden.
 
 \begin{figure}[h!]
     \centering
