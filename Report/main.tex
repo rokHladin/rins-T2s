@@ -419,6 +419,14 @@ Our system is architected as a set of loosely coupled ROS nodes, each responsibl
         ;
 \end{tikzpicture}
 
+Topics:
+\begin{itemize}
+    \item \texttt{/detected\_faces} (published by \textbf{face\_detector})
+    \item \texttt{/ring\_position} (published by \textbf{ring\_detector})
+    \item \texttt{/detected\_birds} (published by \textbf{bird\_detector})
+    \item \texttt{/bird\_initial\_position\_detection} (published by \textbf{bird\_detector}) - the initial pose of
+    \item \texttt{/inspection\_markers} (published by \textbf{inspection\_planner}) - the navigation waypoints
+\end{itemize}
 
 
 % ROS topics and services are used for inter-node communication:
