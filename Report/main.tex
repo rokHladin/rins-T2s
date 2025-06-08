@@ -7,6 +7,7 @@
 
 \usepackage{lmodern}
 \usepackage{microtype}
+\usepackage{float}
 
 % Captions and Plots
 \usepackage{caption}
@@ -124,15 +125,23 @@ The loss function combines localization, confidence, and classification losses:
 \mathcal{L} = \lambda_{\text{coord}} \mathcal{L}_{\text{loc}} + \mathcal{L}_{\text{conf}} + \lambda_{\text{noobj}} \mathcal{L}_{\text{noobj}} + \mathcal{L}_{\text{class}}
 \]
 
+\subsection{ResNet-18 for Bird Species Classification}
+ResNet-18 (Residual Network) was used in classification system for birds. It is a deep convolutional neural network that leverages residual connections to enable effective training of relatively deep models, mitigating the vanishing gradient problem and facilitating the learning of complex visual features.
+We fine-tune ResNet-18 on CUB\_200\_2011 dataset originally containing 200 classes of birds. For our task we used a subset of 24 classes \ref{appendix:birds}. Input images were resized to 224x224 pixels, augmented using random horizontal flips and color jitter, and normalized before being passed to the network. The model is trained using the Adam optimizer with a learning rate of $10^{−4}$, and the cross-entropy loss:
+\[
+\mathcal{L}_{\text{class}} = - \sum_{i=1}^{N} y_i \log(\hat{y}_i)
+\]
+
 \subsection{Autonomous Navigation}
 Autonomous navigation is crucial for the robot to explore the environment and reach designated points of interest. Our approach typically involves:
 \begin{itemize}
     \item \textbf{Mapping:} Utilizing SLAM (Simultaneous Localization and Mapping) techniques, such as GMapping, to build a 2D occupancy grid map of the simulated environment as the robot explores.
-    \item \textbf{Path Planning:} Employing graph-based search algorithms like A* (A-star) or Dijkstra's algorithm on the generated map to find optimal paths between the robot's current position and target locations. Obstacles recorded in the occupancy grid are considered to ensure collision-free paths.
-    \item \textbf{Exploration Strategy:} To ensure comprehensive coverage of the environment, an exploration strategy might be used. This could involve frontier-based exploration, where the robot navigates to the boundaries between known and unknown space. Alternatively, a technique inspired by skeletonization (adapted for 2D map exploration) can simplify the map into a graph of traversable pathways, with key points (e.g., intersections detected using methods analogous to Harris corners) serving as waypoints.
-    \item \textbf{Localization:} Continuous localization using methods like AMCL (Adaptive Monte Carlo Localization) is essential to track the robot's pose within the map accurately.
+    \item \textbf{Path Planning:} Our robot performs path planning using the ROS 2 Navigation Stack (Nav2), which is responsible for computing safe and efficient paths to target locations. Path planning is initiated when \texttt{RobotCommander} node sends a goal to the \texttt{NavigateToPose} action server, provided by the \texttt{nav2\_bt\_navigator} node. Internally, \texttt{nav2\_bt\_navigator} runs a Behavior Tree that coordinates the overall navigation process. It uses the \texttt{nav2\_planner} node, which performs global path planning using graph-based search algorithms such as A* or Dijkstra's algorithm on a 2D occupancy grid. Once a global path is found, the \texttt{nav2\_controller} node handles local path following and dynamic obstacle avoidance using a local planner. In our architecture, \texttt{RobotCommander} acts as a high-level client, while the actual path planning, map updates, and path execution are handled by Nav2 nodes and core ROS 2 action mechanisms. 
+    \item \textbf{Exploration Strategy:} To ensure comprehensive coverage of the environment, we compute navigation waypoints from the acquired map. This is done by fitting lines using Hough transform and slicing the fitted lines into segments of 0.2 meters. For each segment a navigation waypoint is set as a point 0.7 meters from the middle of the line segment to each side of the line. If the location is illegal based on the map, it is removed. If the generated waypoint is too close to any adjacent wall for safe navigation of the robot, it is moved away perpendicular to that wall, ensuring 0.5 meter clearance of each waypoint. Each navigation waypoint also has a direction which points towards the wall. The robot navigator then visits these goals in greedy way, selecting the closest goal based on A* distance.
+    \item \textbf{Localization:} Continuous localization using AMCL (Adaptive Monte Carlo Localization) was used in all parts of the task to track the robot's pose within the map accurately.
 \end{itemize}
-The `navigator.py` script encapsulates these functionalities.
+
+The `planner.py` and `navigator.py` scripts encapsulate these functionalities.
 
 \begin{figure}[h!]
     \centering
@@ -144,7 +153,7 @@ The `navigator.py` script encapsulates these functionalities.
 \subsection{Bird Detection and Classification}
 The task required detecting and classifying multiple bird species.
 \begin{itemize}
-    \item \textbf{Initial Bird Detection (Candidate Finding):} We use a YOLOv8n (You Only Look Once) model \cite{Redmon2016}, specifically \texttt{model/bird\_yolov8n.pt}, to perform fast detection of general "bird" candidates in the robot's camera feed. Input RGB images can be pre-filtered using depth information to focus on closer objects. This stage helps in identifying potential locations of birds for closer inspection.
+    \item \textbf{Initial Bird Detection (Candidate Finding):} We use a general YOLOv8n (You Only Look Once) model \cite{Redmon2016}, obtained from \href{https://github.com/ultralytics/ultralytics}{Ultralytics}, to perform fast detection of "bird" candidates in the robot's camera feed. Input RGB images are pre-filtered using depth information to focus on closer objects. This stage helps in identifying potential locations of birds for closer inspection.
 
     \begin{figure}[h!]
         \centering
@@ -153,13 +162,22 @@ The task required detecting and classifying multiple bird species.
         \label{fig:bird_detection}
     \end{figure}
 
-    \item \textbf{Species Classification and Confirmation:} Once the robot is closer to a potential bird candidate (triggered by a state change, e.g., "ARRIVED\_AT\_BIRD"), the region of interest identified by YOLO is cropped from the RGB image. This crop is then passed to a ResNet18 convolutional neural network, specifically \texttt{model/bird\_species\_resnet18.pt}, which is trained to classify the bird into one of 24 distinct species. The 3D position of the confirmed bird is determined using the associated point cloud data.
+\item \textbf{Species Classification and Confirmation:} Once YOLOv8n detects an object classified as "bird" with classification accuracy above 0.7 (triggered by a state change, e.g., "ARRIVED\_AT\_BIRD"), while also standing at a navigation waypoint, it switches to a state for closer inspection. The regions of interest identified by YOLO are cropped from the RGB image and passed to a fine-tuned ResNet18 convolutional neural network for classifiaction into one of 24 distinct species. A successful classification is published when enough classifications with score above 0.4 are made for the associated bird. The classification performance differs between using \texttt{ogre} and \texttt{ogre2} for simulation engine, as does therefore  the required number of detections. In our experience, the performance was better on \texttt{ogre2}, as it supports the sky, providing better illumination. The final class is determined as the class with the highest mean classification accuracy for the associated bird. The classifications are assigned to a bird (a group of detections) based on proximity ($<0.5 \text{ meters}$) to the center of a known group of detections. The 3D position of the bird is determined using the point cloud data associated with the middle of the cropped bird image.
 
     \begin{figure}[h!]
         \centering
         \includegraphics[width=0.6\textwidth]{images/american_crow2.png}
         \caption{Example of a detected and classified American Crow using ResNet18.}
         \label{fig:american_crow}
+    \end{figure}
+
+\item \textbf{Bird catalogue:} On successful classification a PDF Bird catalogue is generated (or updated) with a picture and species of the detected bird. For that \texttt{ReportLab} Python library was used.
+
+    \begin{figure}[H]
+        \centering
+        \includegraphics[width=0.8\textwidth]{images/bird_catalogue.png}
+        \caption{Example of the generated Bird catalogue.}
+        \label{fig:catalogue}
     \end{figure}
 \end{itemize}
 
@@ -341,7 +359,7 @@ Coordinate transformations between sensor frames, robot frame (\texttt{base\_lin
 
 \subsection{Software Tools and Libraries}
 \begin{itemize}
-    \item \textbf{ROS Noetic} (or Melodic, as applicable): The primary framework for integration.
+    \item \textbf{ROS2 Humble}: The primary framework for integration.
     \item \textbf{Python}: The main programming language for implementing the nodes.
     \item \textbf{OpenCV}: Extensively used for image processing tasks.
     \item \textbf{Deep Learning Libraries:}
