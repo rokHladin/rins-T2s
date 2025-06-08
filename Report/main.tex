@@ -16,6 +16,9 @@
 \usepackage{pgf-pie}
 \usepackage{float}
 
+\usepackage{tikz}
+\usetikzlibrary{automata, positioning}
+
 % TODO notes
 \usepackage{todonotes}
 
@@ -383,7 +386,40 @@ Our system is architected as a set of loosely coupled ROS nodes, each responsibl
 
 \subsection{Communication and Data Flow}
 
-Navigor describe
+
+
+\begin{tikzpicture}[shorten >=1pt, node distance=5cm and 3.5cm, on grid, font=\scriptsize]
+    \node[state, initial, align=center] (Init) {INITIALIZING};
+    \node[state, right=of Init, align=center] (SelectGoal) {SELECTING\\NEW GOAL};
+    \node[state, right=of SelectGoal, align=center] (MoveGoal) {MOVING\\TO GOAL};
+    \node[state, below=of SelectGoal, align=center] (SelectPerson) {SELECTING\\PERSON};
+    \node[state, below=of SelectPerson, align=center] (Talk) {SERVICE\\CONVERSATION};
+    \node[state, right=of SelectPerson, align=center] (AtGoal) {ARRIVED\\AT GOAL};
+    \node[state, below=of AtGoal, align=center] (CloserBird) {MOVING\\CLOSER TO\\BIRD};
+    \node[state, right=of AtGoal, align=center] (AtBird) {ARRIVED\\AT BIRD};
+
+    \node[state, left=of Talk, align=center] (ToBridge) {MOVING\\TO BRIDGE};
+    \node[state, above=of ToBridge, align=center] (BridgeNav) {BRIDGE\\NAVIGATION};
+    \node[state, accepting, left=of BridgeNav, align=center] (Finished) {ROBOT\\FINISHED};
+
+    \path[->]
+        (Init) edge node[below] {\shortstack{got visiting\\points,\\occupancy grid}} (SelectGoal)
+        (SelectGoal) edge node[below] {\shortstack{has\\goals}} (MoveGoal)
+        (MoveGoal) edge node[left] {\shortstack{commander\\goal\\done}} (AtGoal)
+        (AtGoal) edge node[below] {\shortstack{recieved\\/bird\_initial\_position\_detection}} (CloserBird)
+        (AtGoal) edge node[below] {\shortstack{no\\bird\\seen}} (SelectGoal)
+        (CloserBird) edge node[right] {\shortstack{commander\\goal\\done}} (AtBird)
+        (AtBird) edge node[right] {\shortstack{500 ms timer over}} (SelectGoal)
+        (SelectGoal) edge node[below] {\shortstack{no\\goals}} (SelectPerson)
+        (SelectPerson) edge node[below] {\shortstack{service\\talking\\when\\at person}} (Talk)
+        (Talk) edge (SelectPerson)
+        (SelectPerson) edge node[below] {\shortstack{no\\people}} (ToBridge)
+        (ToBridge) edge node[below] {\shortstack{commander\\goal\\done}} (BridgeNav)
+        (BridgeNav) edge node[below] {\shortstack{recieved\\/bridge\\pose\\map\\with final flag}} (Finished)
+        ;
+\end{tikzpicture}
+
+
 
 % ROS topics and services are used for inter-node communication:
 % \begin{itemize}
