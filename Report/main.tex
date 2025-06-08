@@ -153,6 +153,46 @@ Our team, "Pi," focused on developing modular solutions for each sub-problem and
 This section describes the core methods used in our system.
 
 
+
+
+
+
+\subsection{Adaptive Monte Carlo Localization (AMCL)}
+AMCL is a probabilistic localization algorithm that uses a particle filter to track the pose of a robot against a known map \cite{fox2003monte}. It updates particle weights based on laser scan matching and odometry motion models. In our simulation, AMCL was used for global localization of the TurtleBot 4 within a pre-built occupancy grid map during inspection tasks.
+
+\subsection{Simultaneous Localization and Mapping (SLAM)}
+SLAM algorithms enable a robot to build a map of an unknown environment while simultaneously determining its location within that map \cite{durrant}. In our simulation, SLAM (via \texttt{slam\_toolbox}) was used to generate the initial map of the environment before running AMCL-based inspection runs.
+
+\subsection{Harris Corner Detection}
+Harris corner detection is a classical method for identifying interest points (corners) in an image by analyzing changes in intensity gradients \cite{harris1988combined}. In our simulation, it was used in the \texttt{detect\_rings.py} node to extract robust features of ring-like structures in RGB images.
+
+\subsection{Canny Edge Detection}
+Canny edge detection is a multi-stage algorithm that detects edges by applying Gaussian smoothing, gradient calculation, non-maximum suppression, and hysteresis thresholding \cite{canny}. In our simulation, it was used as part of the pre-processing pipeline in both \texttt{detect\_rings.py} and \texttt{video\_to\_audio.py} for detecting edges of rings and structural video features, respectively.
+
+\subsection{Visual Transformer (ViT)}
+Visual Transformers \cite{vistra} adapt Transformer architectures to image processing by representing images as sequences of patches. In our simulation, ViT-based models were used in the bird classification pipeline (\texttt{bird\_classifier.py}) to classify bird species detected by YOLO-based object detectors.
+
+\subsection{Coordinate Transforms in ROS 2}
+Coordinate transforms are essential for expressing sensor data and robot poses in consistent frames of reference \cite{foote2013tf}. In our simulation, the \texttt{tf2} library was used extensively in \texttt{detect\_people.py} and \texttt{detect\_rings.py} to transform 3D positions from camera frames to the global \texttt{map} frame for navigation and inspection.
+
+\subsection{Random Sample Consensus (RANSAC)}
+RANSAC is a robust model fitting algorithm that iteratively selects random data subsets to estimate model parameters and identify inliers \cite{fischler1981random}. In our simulation, RANSAC was employed to fit planes to point clouds around detected faces and rings, allowing estimation of surface normals for viewpoint planning.
+
+\subsection{Hough Transform}
+The Hough transform is a feature extraction technique used to detect parameterized shapes (e.g., lines, circles) in images \cite{duda1972use}. In our simulation, the Hough Circle Transform was used in early versions of \texttt{detect\_rings.py} for detecting circular ring candidates in pre-processed edge maps.
+
+\subsection{Otsu's Thresholding}
+Otsu's method automatically determines an optimal global threshold to separate foreground and background by maximizing inter-class variance \cite{otsu1979threshold}. In our simulation, Otsu's thresholding was applied to pre-processed grayscale images in \texttt{detect\_rings.py} to enhance ring visibility before edge and feature extraction.
+
+\subsection{YOLO}
+\cite{Redmon2016}, obtained from \href{https://github.com/ultralytics/ultralytics}{Ultralytics}. We use a general YOLOv8n model to perform fast detection of "bird" candidates in the robot's camera feed and face detection.
+
+\subsection{ResNet18}
+\cite{resnet} ResNet-18 (Residual Network) was used in classification system for birds. It is a deep convolutional neural network that leverages residual connections to enable effective training of relatively deep models, mitigating the vanishing gradient problem and facilitating the learning of complex visual features.
+
+\section{Implementation and Integration}
+This section details how the aforementioned methods were implemented and integrated into a distributed robotic system using ROS.
+
 \subsection{Autonomous Navigation}
 Our navigation system integrates SLAM-based mapping, dynamic path planning, and robust localization using standard ROS 2 tools.
 \begin{itemize}
@@ -171,8 +211,9 @@ The `planner.py` and `navigator.py` scripts encapsulate these functionalities.
     \label{fig:rviz_view}
 \end{figure}
 
+
 \subsection{Finetuning ResNet-18 for Bird Species Classification}
-ResNet-18 (Residual Network) was used in classification system for birds. It is a deep convolutional neural network that leverages residual connections to enable effective training of relatively deep models, mitigating the vanishing gradient problem and facilitating the learning of complex visual features.
+
 We fine-tune ResNet-18 on CUB\_200\_2011 dataset originally containing 200 classes of birds. For our task we used a subset of 24 classes \ref{appendix:birds}. Input images were resized to 224x224 pixels, augmented using random horizontal flips and color jitter, and normalized before being passed to the network. The model is trained using the Adam optimizer with a learning rate of $10^{-4}$, and the cross-entropy loss:
 \[
 \mathcal{L}_{\text{class}} = - \sum_{i=1}^{N} y_i \log(\hat{y}_i)
@@ -182,7 +223,6 @@ We fine-tune ResNet-18 on CUB\_200\_2011 dataset originally containing 200 class
 \subsection{Bird Detection and Classification}
 The task required detecting and classifying multiple bird species.
 \begin{itemize}
-    \item \textbf{Initial Bird Detection (Candidate Finding):} We use a general YOLOv8n (You Only Look Once) model \cite{Redmon2016}, obtained from \href{https://github.com/ultralytics/ultralytics}{Ultralytics}, to perform fast detection of "bird" candidates in the robot's camera feed. Input RGB images are pre-filtered using depth information to focus on closer objects. This stage helps in identifying potential locations of birds for closer inspection.
 
     \begin{figure}[h!]
         \centering
@@ -190,6 +230,9 @@ The task required detecting and classifying multiple bird species.
         \caption{Bird detection helper window showing YOLO detections.}
         \label{fig:bird_detection}
     \end{figure}
+
+
+\item \textbf{Initial Bird Detection (Candidate Finding):} We use a general YOLOv8n model to perform fast detection of "bird" candidates in the robot's camera feed. Input RGB images are pre-filtered using depth information to focus on closer objects. This stage helps in identifying potential locations of birds for closer inspection.
 
 \item \textbf{Species Classification and Confirmation:} Once YOLOv8n detects an object classified as "bird" with classification accuracy above 0.7 (triggered by a state change, e.g., "ARRIVED\_AT\_BIRD"), while also standing at a navigation waypoint, it switches to a state for closer inspection. The regions of interest identified by YOLO are cropped from the RGB image and passed to a fine-tuned ResNet18 convolutional neural network for classifiaction into one of 24 distinct species. A successful classification is published when enough classifications with score above 0.4 are made for the associated bird. The classification performance differs between using \texttt{ogre} and \texttt{ogre2} for simulation engine, as does therefore  the required number of detections. In our experience, the performance was better on \texttt{ogre2}, as it supports the sky, providing better illumination. The final class is determined as the class with the highest mean classification accuracy for the associated bird. The classifications are assigned to a bird (a group of detections) based on proximity ($<0.5 \text{ meters}$) to the center of a known group of detections (initially published on \texttt{/bird\_initial\_position\_detection} topic). The 3D position of the bird is determined using the point cloud data associated with the middle of the cropped bird image. Confirmed birds are published as \texttt{DetectedBird} messages to the \texttt{/detected\_birds} topic, including species name, confidence, and 3D map coordinates.
 
@@ -332,6 +375,19 @@ This system is designed to be invoked when an interaction is required, taking th
 \end{figure}
 
 
+\subsection{ROS Node Architecture}
+Our system is architected as a set of loosely coupled ROS nodes, each responsible for a specific functionality. This modular design facilitates development, testing, and debugging. Key nodes include:
+\begin{itemize}
+    \item \texttt{navigator} (from \texttt{navigator.py}): This is the central navigation node that controls the robot state and it's actions.
+    
+    \item \texttt{bird\_detector} (from \texttt{bird\_detector.py}): This node implements the two-stage bird detection and classification pipeline.
+        
+    \item \texttt{ring\_detector} (from \texttt{ring\_detector.py}): Processes camera images to detect rings and their colors. Publishes ring information.
+    \item \texttt{face\_detector} (from \texttt{face\_detector.py}): This node handles the detection of human faces and subsequent gender classification.
+
+    \item \texttt{bridge\_navigation} (from \texttt{bridge\_navigation.py}): This node is responsible for visually navigating the bridge.
+    
+\end{itemize}
 
 \subsection{Bridge Crossing}
 Navigating the bridge involves robust visual perception and dynamic pose estimation using the robot's top-mounted arm camera. The processing pipeline adapts based on the robot’s situation and environment, and proceeds through the following stages:
@@ -366,23 +422,6 @@ The \texttt{bridge\_navigation.py} node publishes the resulting pose as a \textt
     \caption{Bridge helper view showing line detection for navigation.}
     \label{fig:bridge_visuals}
 \end{figure}
-
-\section{Implementation and Integration}
-This section details how the aforementioned methods were implemented and integrated into a distributed robotic system using ROS.
-
-\subsection{ROS Node Architecture}
-Our system is architected as a set of loosely coupled ROS nodes, each responsible for a specific functionality. This modular design facilitates development, testing, and debugging. Key nodes include:
-\begin{itemize}
-    \item \texttt{navigator} (from \texttt{navigator.py}): This is the central navigation node that controls the robot state and it's actions.
-    
-    \item \texttt{bird\_detector} (from \texttt{bird\_detector.py}): This node implements the two-stage bird detection and classification pipeline.
-        
-    \item \texttt{ring\_detector} (from \texttt{ring\_detector.py}): Processes camera images to detect rings and their colors. Publishes ring information.
-    \item \texttt{face\_detector} (from \texttt{face\_detector.py}): This node handles the detection of human faces and subsequent gender classification.
-
-    \item \texttt{bridge\_navigation} (from \texttt{bridge\_navigation.py}): This node is responsible for visually navigating the bridge.
-    
-\end{itemize}
 
 \subsection{Communication and Data Flow}
 
