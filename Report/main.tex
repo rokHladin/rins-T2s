@@ -381,7 +381,7 @@ This system is designed to be invoked when an interaction is required, taking th
 Navigating the bridge involves robust visual perception and dynamic pose estimation using the robot's top-mounted arm camera. The processing pipeline adapts based on the robot's situation and environment, and proceeds through the following stages:
 
 \begin{itemize}
-    \item \textbf{Image Preprocessing:} The RGB input from \texttt{/top\_camera/rgb/preview/image\_raw} is converted to HSV. The Hue channel is blurred and thresholded using Otsu's method, then inverted to highlight the bridge structure. This binary image serves as the foundation for further analysis.
+    \item \textbf{Image Preprocessing:} The RGB input from \texttt{/top\_camera/rgb/preview/image\_raw} is converted to HSV. The Hue channel is blurred and thresholded using Otsu's method, then inverted to highlight the bridge structure. This binary image serves as the foundation for further processing.
 
     \item \textbf{Guardrail Detection and Path Guidance:}
     \begin{itemize}
@@ -395,7 +395,7 @@ Navigating the bridge involves robust visual perception and dynamic pose estimat
     \item \textbf{Red X Marker Detection:} After reaching land, the robot seeks a red X stop marker indicating the final goal location.
     \begin{itemize}
         \item The lower central portion of the image is masked to avoid the robot's body.
-        \item The remaining binary mask is eroded and thresholded again to isolate colored regions on the path.
+        \item The remaining binary mask is eroded and thresholded with Otsu's algorithm again to isolate colored regions on the path.
         \item Connected components are analyzed, and for large enough blobs, hue histograms are computed and compared to a red reference histogram using cosine similarity.
         \item If similarity exceeds 0.75, the blob is accepted as a red X, and its center point is projected into a final 3D pose for navigation.
     \end{itemize}
@@ -423,19 +423,65 @@ Our system is architected as a set of loosely coupled ROS nodes, each responsibl
     \item \texttt{face\_detector} (from \texttt{face\_detector.py}): This node handles the detection of human faces and subsequent gender classification.
 
     \item \texttt{bridge\_navigation} (from \texttt{bridge\_navigation.py}): This node is responsible for visually navigating the bridge.
+
+    \item \texttt{planner} (from \texttt{planner.py}): This node publishes the robot visiting goals once during the initialization phase.
+
+    \item \texttt{arm\_mover} (from \texttt{arm\_mover\_actions.py}): This node moves the top arm-mounted camera upon recieving a position on \texttt{/arm\_command}.
     
 \end{itemize}
 
+
+\newpage
 \subsection{Communication and Data Flow}
 
-The core logic of the robot is implemented in the main navigation node (\texttt{navigator.py}), which is responsible for coordinating all high-level behavior throughout the task. This script maintains the robot's current operational state via a finite state machine, guiding the robot through stages such as exploring the park, approaching birds, interacting with humans, and crossing the bridge. That state is being broadcast to every node with the topic \texttt{/robot\_internal\_state}.
+The core logic of the robot is implemented in the main navigation node (\texttt{navigator.py}), which is responsible for coordinating all high-level behavior throughout the task. The navigation node subscribes to several topics to receive information from perception and planning nodes. This data is used to update internal structures such as the list of known birds, rings, and people to interact with.
+
+\begin{itemize}
+    \item \texttt{/detected\_faces} (from \textbf{face\_detector}): 
+    New face groups are added to an internal queue for future person interactions.
+    
+    \item \texttt{/ring\_position} (from \textbf{ring\_detector}): 
+    Detected ring groups are stored in a list used for bird localization during person interactions.
+
+    \item \texttt{/detected\_birds} (from \textbf{bird\_detector}): 
+    Detected and classified birds are added to an internal list for future person interactions.
+
+    \item \texttt{/bird\_initial\_position\_detection} (from \textbf{bird\_detector}): 
+    Sent by the bird detection node when a bird is spotted at a goal.
+
+    \item \texttt{/inspection\_markers} (from \textbf{planner}): 
+    During initialization, a list of exploration waypoints is received and stored in a goal queue.
+
+    \item \texttt{/map} (from \textbf{map server}): 
+    Provides the static occupancy grid map for navigation and costmap generation.
+
+    \item \texttt{/global\_costmap/costmap} (from \textbf{nav2}): 
+    Supplies dynamic obstacle information used in goal planning and collision avoidance.
+
+    \item \texttt{/initialpose} (published): 
+    Sends an initial pose estimate to AMCL during robot initialization.
+
+    \item \texttt{/robot\_internal\_state} (published): 
+    Broadcasts the current internal FSM state of the robot for node behaviour synchronization.
+
+    \item \texttt{/arm\_command} (published): 
+    Sends string commands to control the robot's arm behavior.
+
+    \item \texttt{/amcl\_pose} (from \textbf{AMCL}): 
+    Provides the robot’s estimated position for localization.
+
+    \item \texttt{/bridge\_pose\_map} (from \textbf{bridge\_navigation}): 
+    Used to identify the final waypoint on the bridge, marked with a red X.
+
+\end{itemize}
 
 
+ This node maintains the robot's current operational state via a finite state machine, guiding the robot through stages such as exploring the park, approaching birds, interacting with humans, and crossing the bridge. That state is being broadcast with the topic \texttt{/robot\_internal\_state}.
 
 
+\begin{tikzpicture}[shorten >=1pt, node distance=4cm and 3.5cm, on grid, font=\scriptsize]
+\begin{scope}[xshift=-3cm] % Adjust the value to shift left
 
-
-\begin{tikzpicture}[shorten >=1pt, node distance=5cm and 3.5cm, on grid, font=\scriptsize]
     \node[state, initial, align=center] (Init) {INITIALIZING};
     \node[state, right=of Init, align=center] (SelectGoal) {SELECTING\\NEW GOAL};
     \node[state, right=of SelectGoal, align=center] (MoveGoal) {MOVING\\TO GOAL};
@@ -452,38 +498,56 @@ The core logic of the robot is implemented in the main navigation node (\texttt{
     \path[->]
         (Init) edge node[below] {\shortstack{got visiting\\points,\\occupancy grid}} (SelectGoal)
         (SelectGoal) edge node[below] {\shortstack{has\\goals}} (MoveGoal)
-        (MoveGoal) edge node[left] {\shortstack{commander\\goal\\done}} (AtGoal)
+        (MoveGoal) edge node[above] {\shortstack{commander\\goal\\done}} (AtGoal)
         (AtGoal) edge node[below] {\shortstack{recieved\\/bird\_initial\_position\_detection}} (CloserBird)
         (AtGoal) edge node[below] {\shortstack{no\\bird\\seen}} (SelectGoal)
         (CloserBird) edge node[right] {\shortstack{commander\\goal\\done}} (AtBird)
         (AtBird) edge node[right] {\shortstack{500 ms timer over}} (SelectGoal)
         (SelectGoal) edge node[below] {\shortstack{no\\goals}} (SelectPerson)
-        (SelectPerson) edge node[below] {\shortstack{service\\talking\\when\\at person}} (Talk)
+        (SelectPerson) edge node {\shortstack{go to person,\\run dialogue.py\\when\\at person}} (Talk)
         (Talk) edge (SelectPerson)
         (SelectPerson) edge node[below] {\shortstack{no\\people}} (ToBridge)
         (ToBridge) edge node[below] {\shortstack{commander\\goal\\done}} (BridgeNav)
-        (BridgeNav) edge node[below] {\shortstack{recieved\\/bridge\\pose\\map\\with final flag}} (Finished)
-        ;
+        (BridgeNav) edge node[below] {\shortstack{node\\recieved\\/bridge\_pose\_map\\with red X flag}} (Finished);
+
+\end{scope}
 \end{tikzpicture}
 
-The navigation node subscribes to several topics to receive information from perception and planning nodes. This data is used to update internal structures such as the list of known birds, rings, and people to interact with.
-
 \begin{itemize}
-    \item \texttt{/detected\_faces} (from \textbf{face\_detector}): 
-    New face groups are added to an internal queue for future interactions.
-    
-    \item \texttt{/ring\_position} (from \textbf{ring\_detector}): 
-    Detected ring groups are stored in a list used to guide bird localization.
+    \item \texttt{INITIALIZING}:\\
+    The robot publishes the initial pose to AMCL and waits to receive the occupancy grid and visiting points from the map and planner, publishes an arm command to \texttt{/arm\_command} reposition the arm-mounted camera for bird and ring detection.
 
-    \item \texttt{/detected\_birds} (from \textbf{bird\_detector}): 
-    Detected and classified birds are added to an internal list to avoid duplicate visits.
+    \item \texttt{SELECTING NEW GOAL}:\\
+    Selects a new visiting goal if any are still available, using A* to choose the nearest one.
 
-    \item \texttt{/bird\_initial\_position\_detection} (from \textbf{bird\_detector}): 
-    Triggered when a bird is spotted at a goal; the navigator checks costmaps and sends a navigation goal.
+    \item \texttt{MOVING TO GOAL}:\\
+    A passive state in which the robot is navigating toward the selected inspection goal pose.
 
-    \item \texttt{/inspection\_markers} (from \textbf{planner}): 
-    During initialization, a list of exploration waypoints is received and stored in a goal queue.
+    \item \texttt{ARRIVED AT GOAL}:\\
+    Waits 500 ms to check whether any \texttt{/bird\_initial\_position\_detection} messages have been received.
+
+    \item \texttt{MOVING CLOSER TO BIRD}:\\
+    Upon receiving a bird position, the robot searches the global costmap for a reachable point at a fixed distance from the bird and moves to it.
+
+    \item \texttt{ARRIVED AT BIRD}:\\
+    Waits 500 ms to see if any additional bird classifications are published.
+
+    \item \texttt{SELECTING PERSON}:\\
+    Selects the most recently detected person from the internal person queue.
+
+    \item \texttt{SERVICE CONVERSATION}:\\
+    Navigates to the selected person and launches \texttt{dialogue.py} to begin interaction.
+
+    \item \texttt{MOVING TO BRIDGE}:\\
+    Travels to a hardcoded bridge start pose and, before arrival, publishes an arm command to \texttt{/arm\_command} reposition the arm-mounted camera for bridge navigation.
+
+    \item \texttt{BRIDGE NAVIGATION}:\\
+    Follows the sequence of poses published to \texttt{/bridge\_pose\_map}.
+
+    \item \texttt{ROBOT FINISHED}:\\
+    Enters an idle state indicating all tasks have been completed.
 \end{itemize}
+
 
 
 \subsection{Software Tools and Libraries}
@@ -614,11 +678,12 @@ Throughout this project, we encountered several technical challenges:
 \begin{itemize}
     \item \textbf{Simulation Environment Quirks:} We faced issues with the Gazebo simulation environment. Initially, the Ogre rendering engine did not render the sky, requiring a switch to Ogre2. We also had to debug a problem where point cloud coordinates were unexpectedly flipped by 90 degrees in a configuration file, which complicated initial setup and localization efforts.
 
-    \item \textbf{Resource Limitations:} Development was constrained by the need to use lab computers, as running the full simulation and ROS environment on personal laptops was often not feasible. This limited our access and sometimes slowed down the development and testing cycles.
+    \item \textbf{Resource Limitations:} Development was constrained by the need to use lab computers, as running the full simulation and ROS environment on personal laptops was often not feasible. This limited our access and sometimes slowed down development and testing cycles. Additionally, the one computer we had available for local testing was significantly more powerful than the lab machines, which led to compatibility and performance issues when switching to less capable systems, as configurations were not optimized for them.
 
     \item \textbf{Integration Complexity:} Integrating multiple perception, navigation, and interaction modules into a reliably functioning system is inherently complex. Ensuring robust data flow, timing, and error handling across different ROS nodes required significant effort.
 
-    \item \textbf{Synchronization Issues:} Several perception modules, especially those that estimate 3D positions using point cloud data, required strict synchronization of RGB images, depth images, and point clouds. Without synchronized messages, even minor delays could result in mismatched frames, leading to large spatial errors when estimating object positions. We used ROS 2 message filters to address this issue and ensure time-aligned data across sensors.
+    \item \textbf{Synchronization Issues:} Several perception modules, especially those that estimate 3D positions using point cloud data, required strict synchronization of RGB images, depth images, and point clouds. Without synchronized messages, even minor delays could result in mismatched frames, leading to large spatial errors when estimating object positions. We used ROS 2 message filters to address this issue and ensure time-aligned data across sensors. However, this synchronization introduced a trade-off: since all detector inputs had to be synchronized, the overall detection framerate was reduced, as the system had to wait for all relevant sensor messages to arrive before processing.
+
 \end{itemize}
 
 
