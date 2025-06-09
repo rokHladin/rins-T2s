@@ -119,18 +119,18 @@ The robot must autonomously explore a simulated park environment while performin
         \item Detect all 24 flat bird images placed on the ground, usually near the rings.
         \item Recognize the species of each bird using machine learning classification.
         \item Move close to each detected bird, orient the camera, and take a photograph.
-        \item Log the bird’s image and species name for verification and reporting.
+        \item Log the bird's image and species name for verification and reporting.
         \item Generate a final PDF report listing all detected and classified birds.
     \end{itemize}
 
     \item \textbf{Human Detection and Interaction:}
     \begin{itemize}
         \item Detect and approach humans in the park using face detection.
-        \item Identify each person’s gender.
+        \item Identify each person's gender.
         \item Engage in a dialogue to determine their favorite bird species:
         \begin{itemize}
             \item Women state their favorite bird directly.
-            \item Men require the robot to ask multiple times; the bird repeated twice or confirmed with “yes” is accepted as the favorite.
+            \item Men require the robot to ask multiple times; the bird repeated twice or confirmed with "yes" is accepted as the favorite.
         \end{itemize}
         \item Use previously gathered map and bird data to make conversation context-aware.
     \end{itemize}
@@ -152,11 +152,6 @@ Our team, "Pi," focused on developing modular solutions for each sub-problem and
 \section{Methods}
 This section describes the core methods used in our system.
 
-
-
-
-
-
 \subsection{Adaptive Monte Carlo Localization (AMCL)}
 AMCL is a probabilistic localization algorithm that uses a particle filter to track the pose of a robot against a known map \cite{fox2003monte}. It updates particle weights based on laser scan matching and odometry motion models. In our simulation, AMCL was used for global localization of the TurtleBot 4 within a pre-built occupancy grid map during inspection tasks.
 
@@ -164,13 +159,13 @@ AMCL is a probabilistic localization algorithm that uses a particle filter to tr
 SLAM algorithms enable a robot to build a map of an unknown environment while simultaneously determining its location within that map \cite{durrant}. In our simulation, SLAM (via \texttt{slam\_toolbox}) was used to generate the initial map of the environment before running AMCL-based inspection runs.
 
 \subsection{Harris Corner Detection}
-Harris corner detection is a classical method for identifying interest points (corners) in an image by analyzing changes in intensity gradients \cite{harris1988combined}. In our simulation, it was used in the \texttt{detect\_rings.py} node to extract robust features of ring-like structures in RGB images.
+Harris corner detection is a classical method for identifying interest points (corners) in an image by analyzing changes in intensity gradients \cite{harris1988combined}. In our simulation, it was used in both \texttt{detect\_rings.py} and \texttt{bridge\_navigation.py}. In both cases, it served to remove corner features from edge maps, which helped to isolate cleaner contour lines for rings and bridge guardrails, respectively.
 
 \subsection{Canny Edge Detection}
-Canny edge detection is a multi-stage algorithm that detects edges by applying Gaussian smoothing, gradient calculation, non-maximum suppression, and hysteresis thresholding \cite{canny}. In our simulation, it was used as part of the pre-processing pipeline in both \texttt{detect\_rings.py} and \texttt{video\_to\_audio.py} for detecting edges of rings and structural video features, respectively.
+Canny edge detection is a multi-stage algorithm that detects edges by applying Gaussian smoothing, gradient calculation, non-maximum suppression, and hysteresis thresholding \cite{canny}. In our simulation, it was used as part of the pre-processing pipeline in \texttt{detect\_rings.py} to detect ring edges and in \texttt{bridge\_navigation.py} to identify the bridge guardrails.
 
 \subsection{Visual Transformer (ViT)}
-Visual Transformers \cite{vistra} adapt Transformer architectures to image processing by representing images as sequences of patches. In our simulation, ViT-based models were used in the bird classification pipeline (\texttt{bird\_classifier.py}) to classify bird species detected by YOLO-based object detectors.
+Visual Transformers \cite{vistra} adapt Transformer architectures to image processing by representing images as sequences of patches. In our simulation, a ViT-based model was used in the face detection pipeline (\texttt{face\_detector.py}) to classify the gender of detected human faces.
 
 \subsection{Coordinate Transforms in ROS 2}
 Coordinate transforms are essential for expressing sensor data and robot poses in consistent frames of reference \cite{foote2013tf}. In our simulation, the \texttt{tf2} library was used extensively in \texttt{detect\_people.py} and \texttt{detect\_rings.py} to transform 3D positions from camera frames to the global \texttt{map} frame for navigation and inspection.
@@ -189,6 +184,16 @@ Otsu's method automatically determines an optimal global threshold to separate f
 
 \subsection{ResNet18}
 \cite{resnet} ResNet-18 (Residual Network) was used in classification system for birds. It is a deep convolutional neural network that leverages residual connections to enable effective training of relatively deep models, mitigating the vanishing gradient problem and facilitating the learning of complex visual features.
+
+\subsection{Speech-to-Text and Text-to-Speech}
+The human-robot dialogue system, implemented in \texttt{dialogue.py}, is built upon two core speech technologies: Speech-to-Text (STT) for understanding user input and Text-to-Speech (TTS) for generating the robot's verbal responses.
+
+\subsubsection{Speech-to-Text}
+For STT, our system uses the \texttt{SpeechRecognition} library \cite{speech_recognition_lib}, which serves as a wrapper for various online and offline speech recognition engines. We configured it to use the Google Speech Recognition API, which leverages large-scale deep learning models to achieve high transcription accuracy.
+
+\subsubsection{Text-to-Speech}
+For TTS, we integrated the \texttt{pyttsx3} library \cite{pyttsx3_lib}, a platform-independent, offline TTS engine. This choice ensured that the robot could vocalize its responses without requiring an active internet connection, making the interaction more robust. The library synthesizes speech directly on the machine, allowing for real-time generation of the robot's questions and statements during the dialogue.
+
 
 \section{Implementation and Integration}
 This section details how the aforementioned methods were implemented and integrated into a distributed robotic system using ROS.
@@ -367,7 +372,7 @@ Effective communication with simulated humans is achieved through a dedicated di
 \end{itemize}
 This system is designed to be invoked when an interaction is required, taking the detected gender and current environmental knowledge (bird/ring locations) as input.
 
-\begin{figure}[h!]
+\begin{figure}[H]
     \centering
     \includegraphics[width=0.7\textwidth]{images/dialogue.png}
     \caption{The dialogue interface for human-robot interaction.}
@@ -390,7 +395,7 @@ Our system is architected as a set of loosely coupled ROS nodes, each responsibl
 \end{itemize}
 
 \subsection{Bridge Crossing}
-Navigating the bridge involves robust visual perception and dynamic pose estimation using the robot's top-mounted arm camera. The processing pipeline adapts based on the robot’s situation and environment, and proceeds through the following stages:
+Navigating the bridge involves robust visual perception and dynamic pose estimation using the robot's top-mounted arm camera. The processing pipeline adapts based on the robot's situation and environment, and proceeds through the following stages:
 
 \begin{itemize}
     \item \textbf{Image Preprocessing:} The RGB input from \texttt{/top\_camera/rgb/preview/image\_raw} is converted to HSV. The Hue channel is blurred and thresholded using Otsu's method, then inverted to highlight the bridge structure. This binary image serves as the foundation for further analysis.
@@ -416,7 +421,7 @@ Navigating the bridge involves robust visual perception and dynamic pose estimat
 
 The \texttt{bridge\_navigation.py} node publishes the resulting pose as a \texttt{BridgePose} message to the \texttt{/bridge\_pose\_map} topic, tagging it as a final goal if a red X is detected. The node is active only when the robot is in the \texttt{BRIDGE\_NAVIGATION} or \texttt{GO\_TO\_FINAL\_POSITION} state, unless manually overridden.
 
-\begin{figure}[h!]
+\begin{figure}[H]
     \centering
     \includegraphics[width=1\textwidth]{images/bridge5.png}
     \caption{Bridge helper view showing line detection for navigation.}
@@ -528,7 +533,7 @@ The project was a collaborative effort by Team Pi. While we often discussed and 
 
 \subsection{Evaluation Run}
 
-During the evaluation run, the system performed reliably across most tasks. It successfully detected all human faces and all colored rings, and accurately localized birds relative to their associated rings. The dialogue system correctly simulated conversations and responded according to the person’s gender and preferences. Bridge traversal was also completed without issues, and the robot successfully followed the designated path to the final parking position marked by the red X.
+During the evaluation run, the system performed reliably across most tasks. It successfully detected all human faces and all colored rings, and accurately localized birds relative to their associated rings. The dialogue system correctly simulated conversations and responded according to the person's gender and preferences. Bridge traversal was also completed without issues, and the robot successfully followed the designated path to the final parking position marked by the red X.
 
 One notable failure occurred during bird classification: a small bird (kingfisher) was not correctly classified due to insufficient frame generation. This issue was primarily caused by the high computational load and synchronizing RGB images, depth images, and point clouds, which lowered the detection rate and reduced the number of classification attempts. Additionally, the entire evaluation run took significantly longer than earlier test runs, as it was executed on a less powerful computer than the one used during development, amplifying the performance bottlenecks introduced by resource-intensive modules.
 
