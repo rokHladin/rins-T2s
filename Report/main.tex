@@ -88,7 +88,7 @@ Matjaž Pogačnik
 
 \section{Introduction}
 
-The robot must autonomously explore a simulated park environment while performing a series of perception, navigation, and interaction tasks to complete the mission. The environment is visually rich, contains humans, bridges, birds, and colored rings, and requires semantic understanding and spatial awareness.
+The robot must autonomously explore a simulated park environment while performing a series of perception, navigation, and interaction tasks to complete the mission of taking photographs of birds and relaying the information about their location to the detected people. This task includes: 
 
 \begin{itemize}
 
@@ -103,29 +103,27 @@ The robot must autonomously explore a simulated park environment while performin
     \item \textbf{Bridge Navigation:}
     \begin{itemize}
         \item Detect and traverse narrow bridge structures using visual cues from the arm-mounted camera.
-        \item Identify the end of the bridge via ground appearance changes and plan a smooth transition onto the island.
         \item Search for a final red X marker on the island indicating a stopping point.
     \end{itemize}
 
     \item \textbf{Ring Detection and Navigation:}
     \begin{itemize}
-        \item Detect colored rings in the environment using RGB-D input and fit ellipses to segment the inner and outer boundaries.
-        \item Use rings as navigation waypoints to localize the areas where birds are likely to be found.
-        \item Classify ring colors (red, green, blue, black) based on HSV hue histograms and cosine similarity.
+        \item Detect colored 3D rings in the environment.
+        \item Use rings as waypoints to localize the areas where birds are likely to be found.
+        \item Classify ring colors (red, green, blue, black).
     \end{itemize}
 
     \item \textbf{Bird Detection and Classification:}
     \begin{itemize}
-        \item Detect all 24 flat bird images placed on the ground, usually near the rings.
-        \item Recognize the species of each bird using machine learning classification.
+        \item Detect all 24 flat bird images placed on the rods holding up the rings.
+        \item Recognize the species of each bird.
         \item Move close to each detected bird, orient the camera, and take a photograph.
-        \item Log the bird's image and species name for verification and reporting.
         \item Generate a final PDF report listing all detected and classified birds.
     \end{itemize}
 
     \item \textbf{Human Detection and Interaction:}
     \begin{itemize}
-        \item Detect and approach humans in the park using face detection.
+        \item Detect and approach humans in the park.
         \item Identify each person's gender.
         \item Engage in a dialogue to determine their favorite bird species:
         \begin{itemize}
@@ -137,9 +135,8 @@ The robot must autonomously explore a simulated park environment while performin
 
     \item \textbf{Task Completion:}
     \begin{itemize}
-        \item The robot must visit all regions (East, Center, West).
         \item Complete the bird and human interaction objectives.
-        \item Use ground segmentation and visual navigation to reach the final goal marked with a red X.
+        \item Reach the final goal marked with a red X.
     \end{itemize}
 
 \end{itemize}
@@ -277,7 +274,7 @@ Ring detection is performed using a series of synchronized image processing and 
     \item \textbf{Contour and Ellipse Detection:}
     \begin{itemize}
         \item Contours are extracted from the cleaned edge image.
-        \item Contours shorter than 10 points or too linear (with $>$85\% of points lying close to a line) are discarded.
+        \item Contours shorter than 10 points or too linear (with $>$85\% of points lying close to a fitted line) are discarded.
         \item Remaining contours are fitted with ellipses (only if they have $\geq$9 points).
     \end{itemize}
 
@@ -380,20 +377,6 @@ This system is designed to be invoked when an interaction is required, taking th
 \end{figure}
 
 
-\subsection{ROS Node Architecture}
-Our system is architected as a set of loosely coupled ROS nodes, each responsible for a specific functionality. This modular design facilitates development, testing, and debugging. Key nodes include:
-\begin{itemize}
-    \item \texttt{navigator} (from \texttt{navigator.py}): This is the central navigation node that controls the robot state and it's actions.
-    
-    \item \texttt{bird\_detector} (from \texttt{bird\_detector.py}): This node implements the two-stage bird detection and classification pipeline.
-        
-    \item \texttt{ring\_detector} (from \texttt{ring\_detector.py}): Processes camera images to detect rings and their colors. Publishes ring information.
-    \item \texttt{face\_detector} (from \texttt{face\_detector.py}): This node handles the detection of human faces and subsequent gender classification.
-
-    \item \texttt{bridge\_navigation} (from \texttt{bridge\_navigation.py}): This node is responsible for visually navigating the bridge.
-    
-\end{itemize}
-
 \subsection{Bridge Crossing}
 Navigating the bridge involves robust visual perception and dynamic pose estimation using the robot's top-mounted arm camera. The processing pipeline adapts based on the robot's situation and environment, and proceeds through the following stages:
 
@@ -427,6 +410,21 @@ The \texttt{bridge\_navigation.py} node publishes the resulting pose as a \textt
     \caption{Bridge helper view showing line detection for navigation.}
     \label{fig:bridge_visuals}
 \end{figure}
+
+
+\subsection{ROS Node Architecture}
+Our system is architected as a set of loosely coupled ROS nodes, each responsible for a specific functionality. This modular design facilitates development, testing, and debugging. Key nodes include:
+\begin{itemize}
+    \item \texttt{navigator} (from \texttt{navigator.py}): This is the central navigation node that controls the robot state and it's actions.
+    
+    \item \texttt{bird\_detector} (from \texttt{bird\_detector.py}): This node implements the two-stage bird detection and classification pipeline.
+        
+    \item \texttt{ring\_detector} (from \texttt{ring\_detector.py}): Processes camera images to detect rings and their colors. Publishes ring information.
+    \item \texttt{face\_detector} (from \texttt{face\_detector.py}): This node handles the detection of human faces and subsequent gender classification.
+
+    \item \texttt{bridge\_navigation} (from \texttt{bridge\_navigation.py}): This node is responsible for visually navigating the bridge.
+    
+\end{itemize}
 
 \subsection{Communication and Data Flow}
 
