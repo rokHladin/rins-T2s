@@ -504,6 +504,42 @@ The navigation node subscribes to several topics to receive information from per
     \item \textbf{ReportLab:} For generating PDF reports of detected birds.
 \end{itemize}
 
+\section{Real Robot Implementation (Task 1R)}
+
+This section outlines the specific features and results from our work on the real TurtleBot 4 (Task 1R), which focused primarily on human detection and interaction.
+
+\subsection{Implementation on the Real Robot}
+
+While sharing a common ROS 2 framework with the simulation task, the real-robot implementation required several specific adaptations to handle real-world sensor data and constraints.
+
+\subsubsection{Autonomous Exploration}
+To achieve autonomous exploration, we implemented a coverage-based path planning strategy in the \texttt{planner.py} node. Instead of dynamic frontier-based exploration, this node generates a comprehensive set of inspection waypoints from a pre-existing map. The process involves:
+\begin{enumerate}
+    \item Analyzing the 2D occupancy grid to identify wall structures. This is done by applying a Canny edge detector to the map, followed by a Hough Line Transform to extract straight wall segments.
+    \item Generating camera poses (waypoints) at a fixed offset from these detected walls. Waypoints are created on both sides of each wall segment to ensure full coverage.
+    \item Ensuring all generated waypoints are in navigable, free space and maintain a safe clearance from obstacles, which is verified using a distance transform computed on the map.
+    \item Publishing these waypoints as a \texttt{MarkerArray}, which the \texttt{face\_search.py} navigation node then consumes to visit each point, thereby systematically exploring the entire area.
+\end{enumerate}
+
+\subsubsection{Face Detection}
+Instead of the resource-intensive YOLO model used in simulation, we employed a classical computer vision approach for face detection on the real robot. The \texttt{detect\_people\_haar.py} script utilizes OpenCV's Haar Cascade classifier, which provides a lightweight and fast method for detecting frontal faces. This choice was better suited to the computational resources of the robot's onboard computer.
+
+The node processed RGB and depth streams from the OAK-D camera. For each detected face, it performed RANSAC-based plane fitting on the corresponding point cloud data to estimate the face's 3D position and surface normal. A key feature implemented for robustness was a planarity check, which helped distinguish between real human faces and pictures of faces on flat surfaces like walls.
+
+\subsubsection{Navigation and Interaction}
+The core navigation logic for the real robot was managed by the \texttt{face\_search.py} node. This node would receive face detections, add them to a queue, and interrupt its current exploration task to navigate towards the person.
+
+A crucial feature for real-world operation was the ability to compute a safe navigation goal. This was achieved by checking the local occupancy map around a detected face's coordinates and, if too close to an obstacle, calculating a "pushed" navigation goal at a safer distance from the wall. This ensured the robot could approach people without risking a collision. Once at the interaction goal, it used the same \texttt{pyttsx3}-based TTS engine as in the simulation to greet the person.
+
+\subsubsection{Attempted Ring Detection}
+For bonus points, we began implementing a ring detection module. The approach was similar to its simulation counterpart, relying on HSV color thresholding to segment potential ring candidates and a Canny edge detector to detect edges of rings. We could reliably detect most of the rings, but the problem was bad quality of depth image, therefore we could not determine the location of the rings.
+
+\subsection{Results with the Real Robot}
+
+Our system was successfully deployed on the real TurtleBot 4. The Haar Cascade detector was able to detect faces in real-time, although its performance was, as expected, more sensitive to lighting conditions and head orientation compared to the deep learning models used in simulation.
+
+The navigation system reliably guided the robot to an appropriate interaction distance from detected individuals, with the safe navigation goal calculation proving effective in cluttered environments. The TTS-based interaction was also successfully demonstrated. The primary challenges encountered were related to the inherent noise and variability of real-world sensor data, which required more careful filtering and parameter tuning than in the controlled simulation environment.
+
 \section{Division of Work}
 The project was a collaborative effort by Team Pi. While we often discussed and debugged problems together, primary responsibilities for development and implementation were divided as follows:
 
@@ -564,12 +600,14 @@ One notable failure occurred during bird classification: a small bird (kingfishe
 
 
 
-\begin{figure}[h!]
+\begin{figure}[H]
     \centering
     \includegraphics[width=1\textwidth]{images/rviz_complete.png}
     \caption{RViz view showing the robot's map and useful markers.}
-    \label{fig:rviz_view}
+    \label{fig:rviz_view_complete}
 \end{figure}
+
+
 
 \section{Conclusion}
 Team Pi successfully developed an integrated robotic system capable of addressing the multifaceted challenges of Task T2s within the bird park simulation. Our robot demonstrated capabilities in autonomous navigation, bird, ring and face detection and recognition, human-robot interaction via speech and gender detection, and specialized maneuvers like bridge crossing.
