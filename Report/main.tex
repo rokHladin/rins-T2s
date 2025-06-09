@@ -4,6 +4,7 @@
 \usepackage[utf8]{inputenc}
 \usepackage[T1]{fontenc}
 \usepackage{babel}
+\usepackage{pdfpages}
 
 \usepackage{lmodern}
 \usepackage{microtype}
@@ -150,7 +151,7 @@ Our team, "Pi," focused on developing modular solutions for each sub-problem and
 This section describes the core methods used in our system.
 
 \subsection{Adaptive Monte Carlo Localization (AMCL)}
-AMCL is a probabilistic localization algorithm that uses a particle filter to track the pose of a robot against a known map \cite{fox2003monte}. It updates particle weights based on laser scan matching and odometry motion models. In our simulation, AMCL was used for global localization of the TurtleBot 4 within a pre-built occupancy grid map during inspection tasks.
+AMCL is a probabilistic localization algorithm that uses a particle filter to track the pose of a robot against a known map \cite{fox2003monte}. It updates particle weights based on laser scan matching and odometry motion models. In our simulation, AMCL was used for global localization within a pre-built occupancy grid map during inspection tasks.
 
 \subsection{Simultaneous Localization and Mapping (SLAM)}
 SLAM algorithms enable a robot to build a map of an unknown environment while simultaneously determining its location within that map \cite{durrant}. In our simulation, SLAM (via \texttt{slam\_toolbox}) was used to generate the initial map of the environment before running AMCL-based inspection runs.
@@ -165,22 +166,22 @@ Canny edge detection is a multi-stage algorithm that detects edges by applying G
 Visual Transformers \cite{vistra} adapt Transformer architectures to image processing by representing images as sequences of patches. In our simulation, a ViT-based model was used in the face detection pipeline (\texttt{face\_detector.py}) to classify the gender of detected human faces.
 
 \subsection{Coordinate Transforms in ROS 2}
-Coordinate transforms are essential for expressing sensor data and robot poses in consistent frames of reference \cite{foote2013tf}. In our simulation, the \texttt{tf2} library was used extensively in \texttt{detect\_people.py} and \texttt{detect\_rings.py} to transform 3D positions from camera frames to the global \texttt{map} frame for navigation and inspection.
+Coordinate transforms are essential for expressing sensor data and robot poses in consistent frames of reference \cite{foote2013tf}. In our simulation, the \texttt{tf2} library was used extensively in \texttt{detect\_people.py}, \texttt{bird\_detector.py}, \texttt{bridge\_navigation.py} and \texttt{detect\_rings.py} to transform 3D positions from camera frames to the global \texttt{map} frame for navigation and inspection.
 
 \subsection{Random Sample Consensus (RANSAC)}
 RANSAC is a robust model fitting algorithm that iteratively selects random data subsets to estimate model parameters and identify inliers \cite{fischler1981random}. In our simulation, RANSAC was employed to fit planes to point clouds around detected faces and rings, allowing estimation of surface normals for viewpoint planning.
 
 \subsection{Hough Transform}
-The Hough transform is a feature extraction technique used to detect parameterized shapes (e.g., lines, circles) in images \cite{duda1972use}. In our simulation, the Hough Circle Transform was used in early versions of \texttt{detect\_rings.py} for detecting circular ring candidates in pre-processed edge maps.
+The Hough transform is a feature extraction technique used to detect parameterized shapes (e.g., lines, circles) in images \cite{duda1972use}. 
 
 \subsection{Otsu's Thresholding}
-Otsu's method automatically determines an optimal global threshold to separate foreground and background by maximizing inter-class variance \cite{otsu1979threshold}. In our simulation, Otsu's thresholding was applied to pre-processed grayscale images in \texttt{detect\_rings.py} to enhance ring visibility before edge and feature extraction.
+Otsu's method automatically determines an optimal global threshold to separate foreground and background by maximizing inter-class variance \cite{otsu1979threshold}. In our simulation, Otsu's thresholding was applied to pre-processed grayscale images in \texttt{detect\_rings.py} and \texttt{bridge\_navigation.py} to enhance ring visibility before edge and feature extraction.
 
 \subsection{YOLO}
-\cite{Redmon2016}, obtained from \href{https://github.com/ultralytics/ultralytics}{Ultralytics}. We use a general YOLOv8n model to perform fast detection of "bird" candidates in the robot's camera feed and face detection.
+YOLO is a real-time object detection algorithm that treats object detection as a single regression problem, directly predicting bounding boxes and class probabilities from entire images in one evaluation \cite{Redmon2016}. Its unified architecture enables fast and accurate detection. In our simulation, a general YOLOv8n model, obtained from \href{https://github.com/ultralytics/ultralytics}{Ultralytics}, was used to detect faces, and birds from RGB camera images.
 
 \subsection{ResNet18}
-\cite{resnet} ResNet-18 (Residual Network) was used in classification system for birds. It is a deep convolutional neural network that leverages residual connections to enable effective training of relatively deep models, mitigating the vanishing gradient problem and facilitating the learning of complex visual features.
+ResNet-18 (Residual Network) was used in classification system for birds. It is a deep convolutional neural network that leverages residual connections to enable effective training of relatively deep models, mitigating the vanishing gradient problem and facilitating the learning of complex visual features \cite{resnet}.
 
 \subsection{Speech-to-Text and Text-to-Speech}
 The human-robot dialogue system, implemented in \texttt{dialogue.py}, is built upon two core speech technologies: Speech-to-Text (STT) for understanding user input and Text-to-Speech (TTS) for generating the robot's verbal responses.
@@ -244,7 +245,7 @@ The task required detecting and classifying multiple bird species.
         \caption{Example of a detected and classified American Crow using ResNet18.}
         \label{fig:american_crow}
     \end{figure}
-
+\newpage
 \item \textbf{Bird catalogue:} On successful classification a PDF Bird catalogue is generated (or updated) with a picture and species of the detected bird. For that \texttt{ReportLab} Python library was used.
 
     \begin{figure}[H]
@@ -447,7 +448,7 @@ The core logic of the robot is implemented in the main navigation node (\texttt{
     Detected and classified birds are added to an internal list for future person interactions.
 
     \item \texttt{/bird\_initial\_position\_detection} (from \textbf{bird\_detector}): 
-    Sent by the bird detection node when a bird is spotted at a goal.
+    Sent by the bird detection node when a bird is first spotted at a goal.
 
     \item \texttt{/inspection\_markers} (from \textbf{planner}): 
     During initialization, a list of exploration waypoints is received and stored in a goal queue.
@@ -475,8 +476,7 @@ The core logic of the robot is implemented in the main navigation node (\texttt{
 
 \end{itemize}
 
-
- This node maintains the robot's current operational state via a finite state machine, guiding the robot through stages such as exploring the park, approaching birds, interacting with humans, and crossing the bridge. That state is being broadcast with the topic \texttt{/robot\_internal\_state}.
+The navigation node maintains the robot's current operational state via a finite state machine, guiding the robot through stages such as exploring the park, approaching birds, interacting with humans, and crossing the bridge. That state is being broadcast with the topic \texttt{/robot\_internal\_state}.
 
 
 \begin{tikzpicture}[shorten >=1pt, node distance=4cm and 3.5cm, on grid, font=\scriptsize]
@@ -721,6 +721,9 @@ The bird species classification module (ResNet18) was trained to identify the fo
     \item 191.Red\_headed\_Woodpecker
 \end{enumerate}
 \textit{Note: The system is configured for these 24 species, as reflected in the classification model architecture (`resnet.fc` output features) and training data structure used in \texttt{bird\_detector.py}.}
+
+\section{Generated bird catalogue}
+\includepdf[pages=-]{../birds_detected.pdf}
 
 \printbibliography
 \end{document}

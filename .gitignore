@@ -5,6 +5,7 @@ install
 log
 
 Report/*
+!Report/main.pdf
 !Report/main.tex
 !Report/literature.bib
 !Report/images/
